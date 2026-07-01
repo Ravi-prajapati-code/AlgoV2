@@ -18,6 +18,7 @@ class Position:
     peak_price: float
     status: str = "OPEN"
     days_below_ema50: int = 0
+    atr_at_entry: float = 0.0
     id: Optional[int] = None
 
     @property

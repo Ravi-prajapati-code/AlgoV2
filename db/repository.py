@@ -111,10 +111,11 @@ def save_position(pos: Position):
     conn = get_connection()
     conn.execute(
         """INSERT OR REPLACE INTO positions
-           (symbol, sector, entry_date, entry_price, shares, stop_loss, take_profit, trailing_stop, peak_price, days_below_ema50, status)
-           VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)""",
+           (symbol, sector, entry_date, entry_price, shares, stop_loss, take_profit, trailing_stop, peak_price, days_below_ema50, status, atr_at_entry)
+           VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)""",
         (pos.symbol, pos.sector, pos.entry_date.strftime("%Y-%m-%d"), pos.entry_price, pos.shares,
-         pos.stop_loss, pos.take_profit, pos.trailing_stop, pos.peak_price, pos.days_below_ema50, pos.status)
+         pos.stop_loss, pos.take_profit, pos.trailing_stop, pos.peak_price, pos.days_below_ema50, pos.status,
+         pos.atr_at_entry)
     )
     conn.commit()
     conn.close()
@@ -133,6 +134,7 @@ def load_positions(status: str = "OPEN") -> List[Position]:
             stop_loss=r["stop_loss"], take_profit=r["take_profit"],
             trailing_stop=r["trailing_stop"], peak_price=r["peak_price"],
             days_below_ema50=r["days_below_ema50"] if "days_below_ema50" in r.keys() else 0,
+            atr_at_entry=r["atr_at_entry"] if "atr_at_entry" in r.keys() and r["atr_at_entry"] is not None else 0.0,
             status=r["status"], id=r["id"]
         ))
     return positions

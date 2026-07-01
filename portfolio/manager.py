@@ -585,7 +585,8 @@ class PortfolioManager:
                                 symbol=sig.symbol, sector=sig.indicators.get("sector", "Unknown"),
                                 entry_date=today, entry_price=price, shares=shares,
                                 stop_loss=stops["stop_loss"], take_profit=stops["take_profit"],
-                                trailing_stop=stops["trailing_stop"], peak_price=stops["peak_price"]
+                                trailing_stop=stops["trailing_stop"], peak_price=stops["peak_price"],
+                                atr_at_entry=atr,
                             )
                             self.cash -= (shares * price) + buy_charges(shares * price).total
                             self.open_positions.append(provisional_pos)
@@ -599,7 +600,8 @@ class PortfolioManager:
                             symbol=sig.symbol, sector=sig.indicators.get("sector", "Unknown"),
                             entry_date=today, entry_price=price, shares=shares,
                             stop_loss=stops["stop_loss"], take_profit=stops["take_profit"],
-                            trailing_stop=stops["trailing_stop"], peak_price=stops["peak_price"]
+                            trailing_stop=stops["trailing_stop"], peak_price=stops["peak_price"],
+                            atr_at_entry=atr,
                         )
                         self.cash -= (shares * price) + buy_charges(shares * price).total
                         self.open_positions.append(new_pos)
