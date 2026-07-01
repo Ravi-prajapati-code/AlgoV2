@@ -188,7 +188,12 @@ class PortfolioManager:
         self._gtt_needs_refresh = set()
 
         # ── A. Update Trailing Stops for existing positions (ATR-aware) ──
+        # GOLDBEES (SAFE_HAVEN_SYMBOL) is excluded: it's a static-floor hedge position
+        # (exited only via GOLDBEES_MAX_LOSS_PCT or a BULL regime flip, in strategy/signals.py),
+        # not a momentum stock — it must not be ratcheted/tightened by this ATR trail logic.
         for pos in self.open_positions:
+            if pos.symbol == SAFE_HAVEN_SYMBOL:
+                continue
             cp = prices.get(pos.symbol)
             if cp:
                 atr = (indicators or {}).get(pos.symbol, {}).get('atr', 0)
