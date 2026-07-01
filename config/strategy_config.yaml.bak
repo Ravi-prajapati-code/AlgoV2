@@ -1,0 +1,33 @@
+# ============================================================
+# Strategy Configuration
+# All strategy parameters that can be tuned without code changes.
+# Loaded by config/settings.py when PyYAML is available.
+# ============================================================
+
+strategy:
+  name: "SwingMomentum"
+  version: "2.0"
+  description: "Hybrid momentum/defensive swing trading — NSE"
+
+  # ── Entry conditions ───────────────────────────────────────────────
+  entry:
+    rsi_period: 14
+    rsi_buy_min: 55           # RSI floor (momentum filter)
+    rsi_buy_max: 85
+    min_volume_ratio: 1.5     # 1.5× avg volume required for conviction
+    rs_threshold: 70.0        # RS percentile floor — cross-sectional leaders
+    adx_trend_threshold: 20.0 # ADX computed, NOT used as entry filter (breakout strategy)
+
+  # ── Exit conditions ────────────────────────────────────────────────
+  exit:
+    stop_loss_pct: 0.07
+    take_profit_pct: 0.50
+    trailing_stop_pct: 0.12
+    trail_tighten_threshold: 0.15
+    trail_tighten_pct: 0.06
+    atr_trail_mult_initial: 2.5
+    atr_trail_mult_tight: 1.5
+    max_hold_days: 120
+
+  # ── Sector blocklist (empty — no sectors blocked) ─────────────────
+  blocked_sectors: []

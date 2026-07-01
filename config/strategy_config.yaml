@@ -1,0 +1,22 @@
+strategy:
+  blocked_sectors:
+  - Construction Materials
+  description: Hybrid momentum/defensive swing trading — NSE
+  entry:
+    adx_trend_threshold: 20.0
+    min_volume_ratio: 1.5
+    rs_threshold: 72.0
+    rsi_buy_max: 85
+    rsi_buy_min: 55
+    rsi_period: 14
+  exit:
+    atr_trail_mult_initial: 2.4
+    atr_trail_mult_tight: 1.5
+    max_hold_days: 120
+    stop_loss_pct: 0.07
+    take_profit_pct: 0.5
+    trail_tighten_pct: 0.06
+    trail_tighten_threshold: 0.15
+    trailing_stop_pct: 0.12
+  name: SwingMomentum
+  version: '2.0'

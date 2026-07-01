@@ -1,0 +1,39 @@
+allocation:
+  max_sector_pct: 0.67
+  max_stock_pct: 0.34
+  min_cash_reserve: 0.0
+backtest_criteria:
+  max_drawdown: 1.0
+  min_cagr: 0.0
+  min_profit_factor: 0.0
+  min_sharpe: 0.0
+  min_trades: 1
+  min_win_rate: 0.0
+circuit_breakers:
+  max_consecutive_losses: 999
+  max_daily_loss_pct: 1.0
+  min_win_rate_rolling: 0.0
+drawdown:
+  alert_pct: 0.08
+  kill_switch_pct: 0.18
+  recovery_threshold_pct: 0.05
+  reduce_size_pct: 0.1
+  reduce_size_tier2_mult: 1.5
+per_trade:
+  atr_stop_multiplier: 1.5
+  max_risk_pct: 1.0
+  min_risk_reward: 0.0
+portfolio:
+  cash_reserve_pct: 0.0
+  currency: INR
+  initial_capital: 100000
+  max_new_trades_per_day: 5
+  max_open_positions: 3
+  sizer_cash_buffer_pct: 0.05
+sector_caps:
+  default: 1.0
+volatility:
+  atr_period: 14
+  fixed_stop_pct: 0.06
+  max_slippage_pct: 0.01
+  sizing_method: fixed_pct

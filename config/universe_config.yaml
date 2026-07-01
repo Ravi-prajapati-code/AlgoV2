@@ -1,0 +1,160 @@
+# ============================================================
+# Dynamic Universe Management Configuration
+# Strategy parameters are in strategy_config.yaml / risk_config.yaml.
+# This file controls ONLY the universe selection layer.
+# ============================================================
+
+universe:
+  core_size: 100            # Max stocks in CORE (signals run against these)
+  watchlist_size: 200       # Max stocks in WATCHLIST (monitored, not traded)
+  min_market_cap_cr: 2000   # Minimum market cap in crore (₹)
+  min_avg_daily_volume_cr: 3  # Minimum average daily traded value in crore (₹)
+  min_listing_days: 180     # Minimum trading days since listing
+  exclude_sectors: []       # Sectors to always exclude (empty = none)
+  nse_series: ["EQ"]
+  # Sector concentration cap: no single sector > this fraction of CORE
+  max_sector_pct_of_core: 0.25   # max 25 stocks out of 100 from one sector
+
+# ── Promotion: watchlist → core ────────────────────────────────────────────
+promotion:
+  min_weeks_above_threshold: 4   # 4 consecutive weeks above threshold
+  min_score_percentile: 60       # must be in top 40% of universe
+  # Exceptional momentum fast-track: if score ≥ this, promote in 2 weeks
+  fast_track_percentile: 90      # top 10% → promote in 2 weeks not 4
+  # Stability gate: require min N weeks of data before any promotion
+  min_data_weeks: 26             # stock must have ≥26 weeks of OHLCV history
+
+# ── Demotion: core → watchlist ─────────────────────────────────────────────
+demotion:
+  min_weeks_below_threshold: 3   # 3 consecutive weeks below threshold
+  max_score_percentile: 40       # demote if below 40th percentile
+  # Pause demotions during BEAR regime (all scores drag down uniformly)
+  pause_in_bear_regime: true     # don't demote CORE stocks in sustained BEAR
+  # Override: still demote even in BEAR if score falls below this floor
+  bear_regime_floor_pct: 15      # score < 15th percentile in BEAR → always demote
+
+# ── Removal: watchlist → removed ───────────────────────────────────────────
+removal:
+  min_weeks_below_threshold: 6   # 6 consecutive weeks below threshold
+  max_score_percentile: 25       # remove if below 25th percentile
+  # Fast-track removal: score < fast_track_pct for fast_track_weeks → remove immediately
+  fast_track_pct: 10             # below 10th percentile
+  fast_track_weeks: 2            # for 2 consecutive weeks → immediate removal
+  fundamentals_breach: true      # remove if market cap or volume drops below min
+
+# ── Survivorship bias detection ────────────────────────────────────────────
+survivorship:
+  # If a stock has no price data for this many consecutive weeks → flag as delisted
+  no_data_weeks_threshold: 2
+  # Weekly liquidity degradation: if avg 4-week turnover < X% of 90-day baseline → warn
+  liquidity_degradation_pct: 60  # < 60% of baseline = flagged for review
+
+# ── Lockout: removed → lockout ─────────────────────────────────────────────
+lockout:
+  lockout_weeks: 8               # removed stocks banned for 8 weeks
+
+# ── IPO Integration ────────────────────────────────────────────────────────
+ipo:
+  enabled: true
+  min_listing_days: 90           # minimum 90 days post-listing
+  watch_weeks: 12                # monitor for 12 weeks before qualifying
+  # Use stricter threshold for IPOs (inflation from listing gains)
+  qualify_percentile: 80         # raised from 75 → 80 (more conservative)
+  # IPOs < lock_in_days old: exclude short-term momentum from scoring
+  # (listing gains inflate 1M/3M; we use only 6M + volume + volatility)
+  lock_in_days: 180              # typical NSE lock-in period
+  max_ipo_pct_of_core: 0.10      # max 10% of CORE can be IPOs
+
+# ── Scoring (6 factors, weights must sum to 1.0) ───────────────────────────
+# Factors replace original 5:
+#   momentum_1m     → breakout_readiness   (more predictive, less noise)
+#   volatility_rank → volatility_atr       (true ATR, not std proxy)
+# New factor added:
+#   momentum_consistency (independent dimension: Sharpe of weekly returns)
+scoring:
+  weights:
+    rs_momentum_6m:       0.25   # 6M relative momentum vs Nifty50
+    rs_momentum_3m:       0.20   # 3M relative momentum vs Nifty50
+    breakout_readiness:   0.20   # close/52wk-high × 10d momentum (stage 2 proxy)
+    momentum_consistency: 0.15   # Sharpe of 26 weekly returns (trend smoothness)
+    volume_quality:       0.10   # log(avg daily turnover Cr) with circuit-breaker penalty
+    volatility_atr:       0.10   # 1/(true ATR%) — lower volatility = higher score
+  lookback:
+    momentum_6m_days:  126
+    momentum_3m_days:   63
+    breakout_days:     252       # 52-week high lookback
+    momentum_10d_days:  10       # for breakout_readiness multiplier
+    consistency_weeks:  26       # weekly Sharpe lookback
+    volume_avg_days:    90
+    atr_period:         14
+    # Circuit-breaker detection: if intraday ATR% > this, penalize volume score
+    circuit_breaker_atr_pct: 6.0
+
+# ── Rebalancing Schedule ───────────────────────────────────────────────────
+rebalancing:
+  daily_quality_check:
+    enabled: true
+    time: "18:00"
+    max_removals_per_day: 3
+
+  weekly_ranking_refresh:
+    enabled: true
+    day: "friday"
+    time: "18:30"
+    max_promotions_per_week: 5
+    max_demotions_per_week: 5
+
+  monthly_universe_refresh:
+    enabled: true
+    when: "last_friday_of_month"
+    time: "19:00"
+    scan_new_candidates: true
+    max_new_additions: 10
+
+  quarterly_major_rebalance:
+    enabled: true
+    when: "last_friday_of_quarter"
+    time: "19:30"
+    full_rescan: true
+    max_watchlist_additions: 30
+    reset_churn_counters: false
+    run_audit: true              # always generate full audit on quarterly rebalance
+
+# ── Universe Audit Engine ──────────────────────────────────────────────────
+audit:
+  enabled: true
+  output_dir: "outputs/universe/audit"
+  # Weeks in decline before a CORE stock is flagged as "deteriorating"
+  deterioration_weeks: 4
+  # Minimum score trend (weekly slope) to flag as deteriorating
+  deterioration_slope: -2.0      # losing 2+ percentile points/week
+  # Universe strength thresholds
+  strength_strong_avg_pct: 65    # avg score_percentile > 65 = strong universe
+  strength_weak_avg_pct: 45      # avg score_percentile < 45 = weak universe
+
+# ── Strategy Feedback Loop ─────────────────────────────────────────────────
+# Closes the loop: strategy P&L → universe decisions.
+# Without this, the scorer promotes/demotes on momentum metrics alone
+# and cannot see whether a stock actually makes money in THIS strategy.
+strategy_feedback:
+  enabled: true
+
+  # Guard 1 — P&L veto: demote CORE stocks that consistently lose money
+  # A stock can score 80th pct on momentum but still lose in this strategy
+  # (e.g. KPITTECH: 25% WR -₹6k; CGPOWER: 0% WR -₹5.5k)
+  min_trades: 3               # need at least this many strategy trades (< 3 = insufficient data)
+  max_win_rate: 0.25          # WR below 25% with enough trades = strategy mismatch
+  max_net_pnl: -5000          # net P&L below -₹5,000 confirms it's losing money
+
+  # Guard 2 — Anchor protection: never-traded stocks likely stabilize RS distribution
+  # RS rank = percentile across universe; removing range-bound anchors shifts percentiles
+  # and demotes formerly-qualifying stocks below entry threshold → CAGR drops
+  anchor_lookback_months: 6   # look back this many months for "never traded" check
+  # Fast-track override: always allow removal even for anchors when momentum has collapsed
+  anchor_override_score_pct: 10  # score below 10th percentile → remove regardless (likely delisted/broken)
+
+# ── Notifications ──────────────────────────────────────────────────────────
+notifications:
+  telegram: true
+  report_file: true
+  report_dir: "outputs/universe"
