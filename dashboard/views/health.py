@@ -216,8 +216,10 @@ def render():
         roll_dates   = []
         for i in range(30, len(daily_returns)):
             roll_sharpes.append(_sharpe(daily_returns[i-30:i]))
-            roll_dates.append(snaps_sorted[i+1].date if i+1 < len(snaps_sorted)
-                              else snaps_sorted[-1].date)
+            # daily_returns[k] is the return ENDING on snaps_sorted[k+1].date, so a
+            # window of daily_returns[i-30:i] (last element index i-1) ends on
+            # snaps_sorted[i].date — not [i+1], which mislabeled the x-axis one day late.
+            roll_dates.append(snaps_sorted[i].date)
 
         if roll_sharpes:
             fig = go.Figure()

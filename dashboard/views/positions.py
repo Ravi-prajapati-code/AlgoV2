@@ -79,8 +79,12 @@ def render():
         df["Unrealized P&L"] = df["unrealized_pnl"].apply(lambda x: f"₹{x:+,.2f}")
         df["Change %"]       = df["unrealized_pct"].apply(lambda x: f"{x:+.2f}%")
 
+        # trailing_stop is the live protective level (matches the broker GTT) once a
+        # position has ratcheted past its entry stop_loss — show both, since stop_loss
+        # alone understates protection and can look stale/misleading (2026-07-01 audit).
         all_cols     = ["symbol", "sector", "entry_date", "entry_price", "current_price",
-                        "shares", "stop_loss", "take_profit", "Unrealized P&L", "Change %"]
+                        "shares", "stop_loss", "trailing_stop", "take_profit",
+                        "Unrealized P&L", "Change %"]
         display_cols = [c for c in all_cols if c in df.columns]
 
         def highlight(row):
