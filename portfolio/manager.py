@@ -198,9 +198,15 @@ class PortfolioManager:
             if cp:
                 atr = (indicators or {}).get(pos.symbol, {}).get('atr', 0)
                 old_trail = pos.trailing_stop
+                old_peak = pos.peak_price
                 update_trailing_stop(pos, cp, atr=atr, regime=regime)
                 if pos.trailing_stop > old_trail:
                     self._gtt_needs_refresh.add(pos.symbol)
+                # Persist the ratchet immediately — otherwise trailing_stop/peak_price only
+                # exist in memory for this run and reset to stale values on next load, even
+                # though the broker-side GTT was already updated to the new (correct) level.
+                if pos.trailing_stop != old_trail or pos.peak_price != old_peak:
+                    repo.save_position(pos)
 
         # ── A.1 Update composite score history (load → append today → save) ──
         score_history = _load_score_history()
