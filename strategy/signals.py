@@ -40,20 +40,27 @@ def generate_signals(
             entry = pos.entry_date.date() if hasattr(pos.entry_date, 'date') else pos.entry_date
             days_held = (today - entry).days if entry else 999
             current_price = indicators.get(pos.symbol, {}).get('close', pos.entry_price)
-            if regime == "BULL" and days_held >= MIN_GOLDBEES_HOLD_DAYS:
-                # Hard cut if loss exceeds GOLDBEES_MAX_LOSS_PCT regardless of PROFIT_EXIT_ONLY
-                max_loss_hit = (GOLDBEES_MAX_LOSS_PCT > 0
-                                and current_price < pos.entry_price * (1 - GOLDBEES_MAX_LOSS_PCT))
+            # Hard cut if loss exceeds GOLDBEES_MAX_LOSS_PCT regardless of regime/PROFIT_EXIT_ONLY/
+            # hold-days -- this is a stop-loss, not a bull-rotation signal, so BEAR must not block it.
+            max_loss_hit = (GOLDBEES_MAX_LOSS_PCT > 0
+                            and current_price < pos.entry_price * (1 - GOLDBEES_MAX_LOSS_PCT))
+            if max_loss_hit:
+                signals.append(Signal(
+                    date=today, symbol=pos.symbol, action="SELL",
+                    price=current_price,
+                    reason="GOLDBEES_MAX_LOSS",
+                    indicators=indicators.get(pos.symbol, {}),
+                ))
+            elif regime == "BULL" and days_held >= MIN_GOLDBEES_HOLD_DAYS:
                 # Defer exit when price below entry (profit-exit-only mode)
-                defer = GOLDBEES_PROFIT_EXIT_ONLY and current_price < pos.entry_price and not max_loss_hit
+                defer = GOLDBEES_PROFIT_EXIT_ONLY and current_price < pos.entry_price
                 if defer:
                     updated_positions.append(pos)
                 else:
-                    reason = "GOLDBEES_MAX_LOSS" if max_loss_hit else "EXIT_SAFE_HAVEN (Market is BULL)"
                     signals.append(Signal(
                         date=today, symbol=pos.symbol, action="SELL",
                         price=current_price,
-                        reason=reason,
+                        reason="EXIT_SAFE_HAVEN (Market is BULL)",
                         indicators=indicators.get(pos.symbol, {}),
                     ))
             else:
