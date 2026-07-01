@@ -191,7 +191,7 @@ class PortfolioManager:
         # GOLDBEES (SAFE_HAVEN_SYMBOL) is excluded: it's a static-floor hedge position
         # (exited only via GOLDBEES_MAX_LOSS_PCT or a BULL regime flip, in strategy/signals.py),
         # not a momentum stock — it must not be ratcheted/tightened by this ATR trail logic.
-        for pos in self.open_positions:
+        for pos in list(self.open_positions):
             if pos.symbol == SAFE_HAVEN_SYMBOL:
                 continue
             cp = prices.get(pos.symbol)
@@ -200,6 +200,24 @@ class PortfolioManager:
                 old_trail = pos.trailing_stop
                 old_peak = pos.peak_price
                 update_trailing_stop(pos, cp, atr=atr, regime=regime)
+                if pos.trailing_stop >= cp:
+                    # A regime-aware ratchet can jump the stop by more than the day's
+                    # move, landing the new trigger at/above current price. A GTT placed
+                    # there would fire immediately — but Upstox executes GTT-SINGLE as a
+                    # LIMIT sell at the exact trigger price (ignores our MARKET order_type),
+                    # which is unfillable once price is already below it, so it gets
+                    # auto-cancelled and leaves the position naked (2026-07-01 GOLDBEES
+                    # incident). Exit now via a real market sell instead of racing a GTT.
+                    logger.warning(
+                        f"  [TRAIL-BREACH] {pos.symbol} new stop ₹{pos.trailing_stop:.2f} "
+                        f"already ≥ price ₹{cp:.2f} — exiting immediately instead of GTT"
+                    )
+                    breach_sig = Signal(
+                        date=today, symbol=pos.symbol, action="SELL",
+                        score=0, price=cp, reason="TRAIL_BREACH_IMMEDIATE",
+                    )
+                    self._execute_sell(today, pos, breach_sig, prices)
+                    continue
                 if pos.trailing_stop > old_trail:
                     self._gtt_needs_refresh.add(pos.symbol)
                 # Persist the ratchet immediately — otherwise trailing_stop/peak_price only
