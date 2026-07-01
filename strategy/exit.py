@@ -19,7 +19,7 @@ def initial_stops(price: float, atr: float = 0) -> dict:
     if atr > 0:
         trail = max(round_to_tick(price - (ATR_TRAIL_MULT_INITIAL * atr)), hard_stop)
     else:
-        trail = round_to_tick(price * (1 - TRAILING_STOP_PCT))
+        trail = max(round_to_tick(price * (1 - TRAILING_STOP_PCT)), hard_stop)
     return {
         "stop_loss":     hard_stop,
         "take_profit":   round_to_tick(price * (1 + TAKE_PROFIT_PCT)),
