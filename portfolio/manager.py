@@ -869,9 +869,34 @@ class PortfolioManager:
             if trigger <= 0 or pos.shares <= 0:
                 continue
             try:
-                # Cancel-first to avoid duplicate GTTs, then place at the new trigger
-                for gtt_id in self.broker.get_pending_gtt_orders(pos.symbol):
-                    self.broker.cancel_gtt_order(gtt_id)
+                # Cancel-first to avoid duplicate GTTs, then place at the new trigger.
+                # If any cancel fails, do NOT place a replacement — a single stale GTT
+                # is safer than a duplicate live sell order (the 2026-07-01 CGPOWER
+                # incident: a failed cancel + unconditional replace left two GTTs on
+                # the same position). The old GTT stays active at its old, lower
+                # trigger; gtt_price_audit.py's daily cron will flag the mismatch.
+                pending = self.broker.get_pending_gtt_orders(pos.symbol)
+                cancel_failed = False
+                for gtt_id in pending:
+                    if not self.broker.cancel_gtt_order(gtt_id):
+                        cancel_failed = True
+                if cancel_failed:
+                    logger.warning(
+                        "  [GTT-Sync] %s cancel of stale GTT failed — skipping "
+                        "refresh to avoid a duplicate GTT", pos.symbol
+                    )
+                    try:
+                        import html
+                        from notifications.telegram import send_message
+                        send_message(
+                            f"⚠️ <b>GTT ratchet skipped</b> — {html.escape(pos.symbol)}\n"
+                            f"Cancel of old GTT failed; new stop ₹{trigger:,.2f} was NOT "
+                            f"placed to avoid a duplicate.\n"
+                            f"Old GTT (stale, lower trigger) is still active. Check Upstox manually."
+                        )
+                    except Exception as e:
+                        logger.warning("[Alert] Failed to send GTT-skip alert for %s: %s", pos.symbol, e)
+                    continue
                 gtt_req = OrderRequest(
                     symbol=pos.symbol, side=OrderSide.SELL, quantity=pos.shares,
                     order_type=OrderType.MARKET, is_gtt=True, gtt_trigger_price=trigger,
