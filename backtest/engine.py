@@ -317,8 +317,9 @@ class BacktestEngine:
 
                 # ── Bear swing mode: active trading during BEAR regime ────────
                 if hybrid_mode == "defensive":
-                    # Update trailing stops for ALL positions (gold + bear swing)
-                    for pos in open_positions:
+                    # Update trailing stops for bear-swing positions (gold excluded: it's a
+                    # static-floor hedge exited via GOLDBEES_MAX_LOSS_PCT/regime flip, not ATR trail)
+                    for pos in [p for p in open_positions if p.symbol != GOLD_ETF]:
                         cp  = prices.get(pos.symbol)
                         atr = indicators.get(pos.symbol, {}).get("atr", 0)
                         if cp: update_trailing_stop(pos, cp, atr=atr, regime=regime)
@@ -430,8 +431,8 @@ class BacktestEngine:
                     })
                     continue
 
-                # ── 3. Update Trailing Stops ──
-                for pos in open_positions:
+                # ── 3. Update Trailing Stops (gold excluded: static-floor hedge, not ATR trail) ──
+                for pos in [p for p in open_positions if p.symbol != GOLD_ETF]:
                     cp = prices.get(pos.symbol)
                     atr = indicators.get(pos.symbol, {}).get("atr", 0)
                     if cp: update_trailing_stop(pos, cp, atr=atr, regime=regime)
