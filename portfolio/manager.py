@@ -193,7 +193,7 @@ class PortfolioManager:
             if cp:
                 atr = (indicators or {}).get(pos.symbol, {}).get('atr', 0)
                 old_trail = pos.trailing_stop
-                update_trailing_stop(pos, cp, atr=atr)
+                update_trailing_stop(pos, cp, atr=atr, regime=regime)
                 if pos.trailing_stop > old_trail:
                     self._gtt_needs_refresh.add(pos.symbol)
 

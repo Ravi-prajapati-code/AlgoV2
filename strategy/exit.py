@@ -27,7 +27,9 @@ def initial_stops(price: float, atr: float = 0) -> dict:
         "peak_price":    price,
     }
 
-def update_trailing_stop(pos: Position, current_price: float, atr: float = 0) -> Position:
+REGIME_AWARE_TRAIL = os.getenv("REGIME_AWARE_TRAIL", "0") == "1"
+
+def update_trailing_stop(pos: Position, current_price: float, atr: float = 0, regime: str = None) -> Position:
     """
     Ratchet up trailing stop as price rises.
     Uses ATR-based distance when atr is provided (preferred).
@@ -47,6 +49,17 @@ def update_trailing_stop(pos: Position, current_price: float, atr: float = 0) ->
 
         if new_trail > pos.trailing_stop:
             pos.trailing_stop = round_to_tick(new_trail)
+
+    # Regime-aware tightening: re-evaluate off the existing peak even without a new high today,
+    # so a BEAR regime flip protects the position immediately instead of waiting for a new peak
+    # (the block above only ever fires on new-high days).
+    if REGIME_AWARE_TRAIL and regime == "BEAR":
+        if atr > 0:
+            bear_trail = pos.peak_price - (ATR_TRAIL_MULT_TIGHT * atr)
+        else:
+            bear_trail = pos.peak_price * (1 - TRAIL_TIGHTEN_PCT)
+        if bear_trail > pos.trailing_stop:
+            pos.trailing_stop = round_to_tick(bear_trail)
 
     return pos
 

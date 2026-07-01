@@ -321,7 +321,7 @@ class BacktestEngine:
                     for pos in open_positions:
                         cp  = prices.get(pos.symbol)
                         atr = indicators.get(pos.symbol, {}).get("atr", 0)
-                        if cp: update_trailing_stop(pos, cp, atr=atr)
+                        if cp: update_trailing_stop(pos, cp, atr=atr, regime=regime)
 
                     portfolio_val = cash + portfolio_invested_value(open_positions, prices)
                     peak_value    = max(peak_value, portfolio_val)
@@ -434,7 +434,7 @@ class BacktestEngine:
                 for pos in open_positions:
                     cp = prices.get(pos.symbol)
                     atr = indicators.get(pos.symbol, {}).get("atr", 0)
-                    if cp: update_trailing_stop(pos, cp, atr=atr)
+                    if cp: update_trailing_stop(pos, cp, atr=atr, regime=regime)
 
                 held = {pos.symbol for pos in open_positions}
                 portfolio_val = cash + portfolio_invested_value(open_positions, prices)

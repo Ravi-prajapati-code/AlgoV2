@@ -65,13 +65,13 @@ def _run_backtest_window(start: date, end: date) -> dict:
     )
     result = engine.run()
 
-    trades = result.get("trades", [])
-    snaps  = result.get("snapshots", [])
+    trades = result.trades
+    equity_curve = result.equity_curve
 
-    if not snaps or not trades:
+    if not equity_curve or not trades:
         return {}
 
-    values = [s.total_value for s in snaps]
+    values = [v for _, v in sorted(equity_curve.items())]
     years  = (end - start).days / 365.25
     final  = values[-1]
     cagr   = ((final / INITIAL_CAPITAL) ** (1.0 / years) - 1.0) * 100 if years > 0 else 0
