@@ -274,7 +274,7 @@ class UpstoxBroker(BaseBroker):
         try:
             resp = self._session.delete(
                 f"{self._base_url.replace('/v2', '/v3')}/order/gtt/cancel",
-                params={"gtt_order_id": gtt_order_id},
+                json={"gtt_order_id": gtt_order_id},
                 headers=self._headers,
                 timeout=10,
             )
