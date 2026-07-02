@@ -129,12 +129,6 @@ TREND_GATE_200_ENABLED = os.getenv("TREND_GATE_200", "false").lower() in ("true"
 # NEXT_DAY_OPEN_FILL=false to reproduce the old (optimistic) same-day-close numbers.
 NEXT_DAY_OPEN_FILL_ENABLED = os.getenv("NEXT_DAY_OPEN_FILL", "true").lower() in ("true", "1", "yes")
 
-# ATR-risk-based position sizing (portfolio/sizer.py's calculate_shares) as an
-# alternative to the default equal-weight-cash sizer for NEW entries. Off by
-# default — this is a test-only lever for isolated stress-scenario comparison,
-# not yet validated for production use.
-ATR_RISK_SIZING_ENABLED = os.getenv("ATR_RISK_SIZING", "false").lower() in ("true", "1", "yes")
-
 # ──────────────────────────────────────────────
 # BACKTESTING — SLIPPAGE (Phase 2)
 # ──────────────────────────────────────────────

@@ -29,7 +29,7 @@ NIFTY_PULLBACK_GUARD_PCT = float(os.getenv("NIFTY_PULLBACK_PCT", "0"))
 PORTFOLIO_STOP_PCT      = float(os.getenv("PORTFOLIO_STOP_PCT",      "0"))
 from strategy.signals import generate_signals, MIN_DAILY_TURNOVER
 from strategy.exit import initial_stops, update_trailing_stop, check_exit_conditions
-from portfolio.sizer import calculate_shares_for_value, calculate_shares, position_value
+from portfolio.sizer import calculate_shares_for_value, position_value
 from portfolio.allocator import can_open_position, portfolio_invested_value
 from portfolio.risk import can_open_new_trades
 from strategy.scoring import score_to_size_factor
@@ -44,7 +44,7 @@ from config.settings import (
     MACD_FAST, MACD_SLOW, MACD_SIGNAL, SAFE_HAVEN_SYMBOL,
     MAX_STOCK_ALLOCATION_PCT, MAX_NEW_TRADES_PER_DAY,
     ATR_TRAIL_MULT_INITIAL, GOLDBEES_PROFIT_EXIT_ONLY, GOLDBEES_MAX_LOSS_PCT,
-    NEXT_DAY_OPEN_FILL_ENABLED, ATR_RISK_SIZING_ENABLED,
+    NEXT_DAY_OPEN_FILL_ENABLED,
 )
 
 logger = logging.getLogger(__name__)
@@ -400,17 +400,9 @@ class BacktestEngine:
                                 logger.info(f"  [BEAR-SKIP] {symbol:<12} — {alloc_reason}")
                                 continue
                             target_value = slot_cash_capped - buy_charges(slot_cash_capped).total
-                            atr = float(ind.get("atr", 0) or 0)
-                            stops = initial_stops(ep, atr=atr)
-                            if ATR_RISK_SIZING_ENABLED:
-                                shares = calculate_shares(
-                                    portfolio_value=portfolio_val, entry_price=ep,
-                                    stop_loss_price=stops["stop_loss"], available_cash=target_value,
-                                    atr=atr, atr_mult=ATR_TRAIL_MULT_INITIAL,
-                                )
-                            else:
-                                shares = calculate_shares_for_value(target_value, ep)
+                            shares = calculate_shares_for_value(target_value, ep)
                             if shares > 0:
+                                stops = initial_stops(ep, atr=float(ind.get("atr", 0) or 0))
                                 open_positions.append(Position(
                                     symbol=symbol, sector=get_sector(symbol),
                                     entry_date=today_ts, entry_price=ep, shares=shares,
@@ -618,14 +610,7 @@ class BacktestEngine:
                                     continue
 
                             target_value = slot_cash - buy_charges(slot_cash).total
-                            if ATR_RISK_SIZING_ENABLED:
-                                shares = calculate_shares(
-                                    portfolio_value=portfolio_val, entry_price=exec_price,
-                                    stop_loss_price=stops["stop_loss"], available_cash=target_value,
-                                    atr=atr, atr_mult=ATR_TRAIL_MULT_INITIAL,
-                                )
-                            else:
-                                shares = calculate_shares_for_value(target_value, exec_price)
+                            shares = calculate_shares_for_value(target_value, exec_price)
 
                             if shares > 0:
                                 logger.info(f"  [BUY]  {sig.symbol:<12} @ ₹{exec_price:>9,.2f} | RS Rank: {sig.score:.1f} | Exec Date: {exec_date}")
