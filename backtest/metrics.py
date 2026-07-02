@@ -75,6 +75,9 @@ def calculate_metrics(result: BacktestResult, initial_capital: float = INITIAL_C
             "profit_factor":            0.0,
             "total_charges_inr":        0.0,
             "annual_charges_drag_pct":  0.0,
+            "sortino_ratio":            0.0,
+            "calmar_ratio":             0.0,
+            "avg_exposure_pct":         0.0,
             "passes_min_cagr":          False,
             "passes_sharpe":            False,
             "passes_drawdown":          True,
@@ -112,8 +115,32 @@ def calculate_metrics(result: BacktestResult, initial_capital: float = INITIAL_C
         variance = sum((r - mean_r) ** 2 for r in daily_returns) / len(daily_returns)
         std_r = math.sqrt(variance)
         sharpe = (mean_r / std_r * math.sqrt(252)) if std_r > 0 else 0.0
+
+        # Sortino — same as Sharpe but penalizes only downside deviation
+        downside = [r for r in daily_returns if r < 0]
+        if downside:
+            downside_var = sum(r ** 2 for r in downside) / len(daily_returns)
+            downside_std = math.sqrt(downside_var)
+            sortino = (mean_r / downside_std * math.sqrt(252)) if downside_std > 0 else 0.0
+        else:
+            sortino = 0.0
     else:
         sharpe = 0.0
+        sortino = 0.0
+
+    # Calmar — CAGR / max drawdown (undefined if never drew down)
+    calmar = (cagr / max_dd) if max_dd > 0 else 0.0
+
+    # Exposure — average fraction of equity actually invested (1 - cash/equity)
+    cash_curve = result.cash_curve
+    if cash_curve:
+        exposures = [
+            1 - (cash_curve.get(d, values[i]) / values[i]) if values[i] > 0 else 0.0
+            for i, d in enumerate(dates)
+        ]
+        avg_exposure = sum(exposures) / len(exposures)
+    else:
+        avg_exposure = 0.0
 
     completed = [t for t in trades if t.net_pnl is not None]
     winners = [t for t in completed if (t.net_pnl or 0) > 0]
@@ -147,11 +174,16 @@ def calculate_metrics(result: BacktestResult, initial_capital: float = INITIAL_C
         "cagr_pct":          round(cagr * 100, 2),
         "max_drawdown_pct":  round(max_dd * 100, 2),
         "sharpe_ratio":      round(sharpe, 2),
+        "sortino_ratio":     round(sortino, 2),
+        "calmar_ratio":      round(calmar, 2),
+        "avg_exposure_pct":  round(avg_exposure * 100, 2),
         "monthly_returns":   monthly_returns,
         "total_trades":      len(completed),
         "win_rate_pct":      round(win_rate * 100, 2),
         "avg_win_inr":       round(avg_win, 2),
         "avg_loss_inr":      round(avg_loss, 2),
+        "payoff_ratio":      round(abs(avg_win / avg_loss), 2) if avg_loss else 0.0,
+        "expectancy_inr":    round(win_rate * avg_win + (1 - win_rate) * avg_loss, 2) if completed else 0.0,
         "avg_hold_days":     round(avg_hold, 1),
         "profit_factor":     round(profit_factor, 2),
         "total_charges_inr":      round(total_charges, 2),
