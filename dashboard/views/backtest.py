@@ -65,7 +65,7 @@ def render():
     st.subheader("Results")
 
     col1, col2, col3, col4 = st.columns(4)
-    cagr_pass = "✅" if metrics["passes_15pct_target"] else "❌"
+    cagr_pass = "✅" if metrics["passes_min_cagr"] else "❌"
     col1.metric("CAGR",          f"{metrics['cagr_pct']:+.2f}%  {cagr_pass}")
     col2.metric("Sharpe Ratio",  metrics["sharpe_ratio"])
     col3.metric("Max Drawdown",  f"{metrics['max_drawdown_pct']:.2f}%")

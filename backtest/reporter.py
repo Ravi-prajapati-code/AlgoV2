@@ -50,7 +50,7 @@ def print_summary(metrics: dict, result: BacktestResult = None):
         print(f"  └─ Portfolio/Open:  ₹{0.0:>12.2f}  (All positions closed at end)")
 
     print(f"  Total Return     :  {metrics['total_return_pct']:>+.2f}%")
-    print(f"  CAGR             :  {metrics['cagr_pct']:>+.2f}%  {'✅' if metrics['passes_15pct_target'] else '❌'}")
+    print(f"  CAGR             :  {metrics['cagr_pct']:>+.2f}%  {'✅' if metrics['passes_min_cagr'] else '❌'}")
     print(f"  Sharpe Ratio     :  {metrics['sharpe_ratio']:>.2f}  {'✅' if metrics['passes_sharpe'] else '❌'}")
     print(f"  Max Drawdown     :  {metrics['max_drawdown_pct']:>.2f}%  {'✅' if metrics['passes_drawdown'] else '❌'}")
     print("-" * 60)
