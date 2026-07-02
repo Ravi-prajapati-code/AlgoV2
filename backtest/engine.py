@@ -44,7 +44,7 @@ from config.settings import (
     MACD_FAST, MACD_SLOW, MACD_SIGNAL, SAFE_HAVEN_SYMBOL,
     MAX_STOCK_ALLOCATION_PCT, MAX_NEW_TRADES_PER_DAY,
     ATR_TRAIL_MULT_INITIAL, GOLDBEES_PROFIT_EXIT_ONLY, GOLDBEES_MAX_LOSS_PCT,
-    NEXT_DAY_OPEN_FILL_ENABLED,
+    NEXT_DAY_OPEN_FILL_ENABLED, REGIME_SMOOTHING_ENABLED,
 )
 
 logger = logging.getLogger(__name__)
@@ -734,8 +734,17 @@ class BacktestEngine:
             }).dropna()
             index_by_time[t] = idx_time
             # Precompute regime (100 EMA)
-            ema100_idx = idx_time['close'].ewm(span=100, adjust=False).mean()
-            regime_by_time[t] = {d.date(): ("BULL" if idx_time['close'].loc[d] > ema100_idx.loc[d] else "BEAR") for d in idx_time.index}
+            if REGIME_SMOOTHING_ENABLED:
+                # Match live's detect_regime() (3-day-confirm + hysteresis whipsaw
+                # filter) instead of a raw same-day EMA100 crossover — expanding
+                # window per day, no lookahead.
+                regime_by_time[t] = {
+                    idx_time.index[j].date(): detect_regime(idx_time.iloc[:j + 1])
+                    for j in range(len(idx_time))
+                }
+            else:
+                ema100_idx = idx_time['close'].ewm(span=100, adjust=False).mean()
+                regime_by_time[t] = {d.date(): ("BULL" if idx_time['close'].loc[d] > ema100_idx.loc[d] else "BEAR") for d in idx_time.index}
             # Precompute short-term index confirmation (20 EMA)
             ema20_idx = idx_time['close'].ewm(span=20, adjust=False).mean()
             idx_confirmed_by_time[t] = {d.date(): bool(idx_time['close'].loc[d] > ema20_idx.loc[d]) for d in idx_time.index}

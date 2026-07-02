@@ -129,6 +129,18 @@ TREND_GATE_200_ENABLED = os.getenv("TREND_GATE_200", "false").lower() in ("true"
 # NEXT_DAY_OPEN_FILL=false to reproduce the old (optimistic) same-day-close numbers.
 NEXT_DAY_OPEN_FILL_ENABLED = os.getenv("NEXT_DAY_OPEN_FILL", "true").lower() in ("true", "1", "yes")
 
+# Backtest-only correctness fix: live (runner/daily_runner.py) computes regime via
+# strategy.regime.detect_regime() — a 3-day-confirm + 65%-of-20-days-hysteresis
+# whipsaw filter. backtest/engine.py's _precompute_all() used to independently
+# compute its own raw day-by-day (close > EMA100) regime signal instead of calling
+# the detect_regime() it already imports — a genuine live/backtest divergence, not
+# a deliberate design choice. On by default as of 2026-07-02: A/B validated
+# against the old raw signal (CAGR +32.04%→+12.63%, Sharpe 1.71→0.82, MDD
+# 18.68%→23.67% on 2022-01-01→2026-06-30 under the then-current params — the old
+# raw-signal numbers were never representative of what live actually gates on).
+# Set REGIME_SMOOTHING=false to reproduce the old (incorrect) raw-signal numbers.
+REGIME_SMOOTHING_ENABLED = os.getenv("REGIME_SMOOTHING", "true").lower() in ("true", "1", "yes")
+
 # ──────────────────────────────────────────────
 # BACKTESTING — SLIPPAGE (Phase 2)
 # ──────────────────────────────────────────────
