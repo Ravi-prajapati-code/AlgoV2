@@ -147,7 +147,10 @@ ML_MODEL_DIR            = "ml/models"
 PARTIAL_REGIME_MIN_CANDLES = 50       # Minimum candles for PARTIAL regime trading
 LOOKBACK_DAYS           = 500         # Days of OHLCV history for indicators; matches EMA_WARMUP_DAYS for EMA(150) convergence
 EMA_WARMUP_DAYS         = 500         # Days needed for EMA(150) to converge (3× span); used on first fetch
-DATA_CACHE_DB           = "db/trading.db"
+# DB_PATH_OVERRIDE lets isolated tooling (e.g. scripts/stress_test_scenarios.py)
+# point the whole app at a scratch DB via subprocess env, without ever touching
+# the real db/trading.db — same per-deploy-override pattern as everything else here.
+DATA_CACHE_DB           = os.getenv("DB_PATH_OVERRIDE", "db/trading.db")
 DB_PATH                 = DATA_CACHE_DB
 OUTPUTS_DIR             = "outputs"
 
