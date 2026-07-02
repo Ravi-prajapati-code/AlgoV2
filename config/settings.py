@@ -121,12 +121,13 @@ ADX_TREND_THRESHOLD  = entry_cfg.get('adx_trend_threshold', 20.0)
 # 200-day EMA trend gate (off by default — live unaffected). Test-only refinement lever.
 TREND_GATE_200_ENABLED = os.getenv("TREND_GATE_200", "false").lower() in ("true", "1", "yes")
 
-# Backtest-only realism fix: entries currently fill at the SAME day's close as the
-# signal (strategy/signals.py sets price = today's close), which the live system can
-# never achieve — live computes signals from yesterday's close and fills at today's
-# 09:17 open. Off by default so it doesn't silently redefine the existing baseline;
-# flip on to A/B the more realistic (and likely lower) backtested performance.
-NEXT_DAY_OPEN_FILL_ENABLED = os.getenv("NEXT_DAY_OPEN_FILL", "false").lower() in ("true", "1", "yes")
+# Backtest-only realism fix: entries fill at the NEXT trading day's open, matching
+# live's actual timing (signal from yesterday's close, fill at today's 09:17 open).
+# On by default as of 2026-07-02 — A/B validated against the prior same-day-close
+# fill (CAGR +40.89%→+32.28%, Sharpe 2.10→1.72, MDD 13.96%→18.68% on 2022-01-01→
+# 2026-06-30, same trade count) and adopted as the realistic baseline. Set
+# NEXT_DAY_OPEN_FILL=false to reproduce the old (optimistic) same-day-close numbers.
+NEXT_DAY_OPEN_FILL_ENABLED = os.getenv("NEXT_DAY_OPEN_FILL", "true").lower() in ("true", "1", "yes")
 
 # ──────────────────────────────────────────────
 # BACKTESTING — SLIPPAGE (Phase 2)
