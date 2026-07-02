@@ -188,11 +188,28 @@ def test_normal_ratchet_refreshes_gtt_and_persists(monkeypatch):
     gtts = [o for o in broker.placed_orders if o.symbol == "ABC.NS" and o.is_gtt]
     assert len(gtts) == 1
     assert gtts[0].gtt_trigger_price == 92.0
+    # Limit price must sit strictly below the trigger — a limit pinned at the
+    # trigger is unfillable the instant price gaps through it (2026-07-01
+    # GOLDBEES incident). See portfolio.manager.gtt_stop_limit_price().
+    assert 0 < gtts[0].price < gtts[0].gtt_trigger_price
 
     # Persisted to DB even though nothing was bought/sold this run (c5460f6).
     saved = next(p for p in load_positions(status="OPEN") if p.symbol == "ABC.NS")
     assert saved.trailing_stop == 92.0
     assert saved.peak_price == cp
+
+
+# ── GTT stop-loss limit price has a fill buffer (2026-07-01 GOLDBEES gap) ──
+
+def test_gtt_stop_limit_price_has_fill_buffer():
+    from portfolio.manager import gtt_stop_limit_price
+    from config.settings import GTT_LIMIT_BUFFER_PCT
+
+    trigger = 92.0
+    limit = gtt_stop_limit_price(trigger)
+    assert limit < trigger
+    expected = round(trigger * (1 - GTT_LIMIT_BUFFER_PCT) / 0.05) * 0.05
+    assert limit == pytest.approx(expected, abs=0.01)
 
 
 def test_unchanged_trailing_stop_does_not_touch_gtt(monkeypatch):

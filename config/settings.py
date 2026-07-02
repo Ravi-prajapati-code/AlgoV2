@@ -70,6 +70,12 @@ DRAWDOWN_KILL_SWITCH_PCT       = float(os.getenv("DD_KILL_PCT",   drawdown_cfg.g
 DRAWDOWN_REDUCE_SIZE_PCT       = float(os.getenv("DD_REDUCE_PCT", drawdown_cfg.get('reduce_size_pct', 0.05)))
 DRAWDOWN_REDUCE_TIER2_MULT     = float(os.getenv("DD_TIER2_MULT", drawdown_cfg.get('reduce_size_tier2_mult', 1.5)))
 
+# GTT stop-loss orders execute as LIMIT on trigger (NSE GTT does not support true
+# market-on-trigger) — with no buffer, a limit pinned at the exact trigger price is
+# unfillable the instant price gaps/moves through it (2026-07-01 GOLDBEES incident:
+# left naked all day). This buffer gives the resting order real room to fill.
+GTT_LIMIT_BUFFER_PCT           = float(os.getenv("GTT_LIMIT_BUFFER_PCT", "0.015"))
+
 # ──────────────────────────────────────────────
 # STRATEGY — ENTRY SIGNALS (from strat_cfg)
 # ──────────────────────────────────────────────

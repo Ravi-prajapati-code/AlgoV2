@@ -238,12 +238,14 @@ def sync_portfolio_with_broker(broker, today: date):
                 # Place GTT stop-loss for newly synced position (cancel-first to avoid duplicates)
                 try:
                     from broker.base import OrderRequest, OrderSide, OrderType, OrderStatus
+                    from portfolio.manager import gtt_stop_limit_price
                     for gtt_id in broker.get_pending_gtt_orders(lp.symbol):
                         logger.info("[Sync] Cancelling stale GTT %s for %s", gtt_id, lp.symbol)
                         broker.cancel_gtt_order(gtt_id)
                     gtt_req = OrderRequest(
                         symbol=lp.symbol, side=OrderSide.SELL, quantity=lp.quantity,
                         order_type=OrderType.MARKET,
+                        price=gtt_stop_limit_price(stops["stop_loss"]),
                         is_gtt=True, gtt_trigger_price=stops["stop_loss"],
                     )
                     gtt_res = broker.place_order_with_retry(gtt_req)

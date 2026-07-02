@@ -20,7 +20,7 @@ from strategy.scoring import score_to_size_factor
 from strategy.exit import initial_stops, update_trailing_stop
 from charges.calculator import net_pnl, buy_charges
 from broker.base import BaseBroker, OrderSide, OrderType, OrderRequest
-from config.settings import INITIAL_CAPITAL, round_to_tick, MAX_OPEN_POSITIONS, SAFE_HAVEN_SYMBOL, SIZER_CASH_BUFFER_PCT, MAX_STOCK_ALLOCATION_PCT, DRAWDOWN_REDUCE_SIZE_PCT, DRAWDOWN_REDUCE_TIER2_MULT
+from config.settings import INITIAL_CAPITAL, round_to_tick, MAX_OPEN_POSITIONS, SAFE_HAVEN_SYMBOL, SIZER_CASH_BUFFER_PCT, MAX_STOCK_ALLOCATION_PCT, DRAWDOWN_REDUCE_SIZE_PCT, DRAWDOWN_REDUCE_TIER2_MULT, GTT_LIMIT_BUFFER_PCT
 from strategy.defensive_portfolio import (
     ROTATION_ENABLED, ROTATE_EXIT_RS, ROTATE_INTO_RS, ROTATE_MIN_GAP,
     RIDE_WINNER_ENABLED, RIDE_WINNER_GAP_PCT,
@@ -61,6 +61,13 @@ def _save_score_history(history: Dict[str, list]) -> None:
         logger.warning(f"[score_history] Could not save: {e}")
 
 logger = logging.getLogger(__name__)
+
+
+def gtt_stop_limit_price(trigger_price: float) -> float:
+    """Limit price for a SELL-side stop-loss GTT: buffered below the trigger so the
+    resting LIMIT order (NSE GTTs cannot execute as true MARKET) has real room to
+    fill on a gap, instead of sitting unfillable at the exact trigger price."""
+    return round_to_tick(trigger_price * (1 - GTT_LIMIT_BUFFER_PCT))
 
 
 def _alert_naked_stop(symbol: str, shares, trigger, reason: str) -> None:
@@ -423,6 +430,7 @@ class PortfolioManager:
                                     gtt_req = OrderRequest(
                                         symbol=best.symbol, side=OrderSide.SELL,
                                         quantity=best.shares, order_type=OrderType.MARKET,
+                                        price=gtt_stop_limit_price(best.trailing_stop),
                                         is_gtt=True, gtt_trigger_price=best.trailing_stop,
                                     )
                                     gtt_res = self.broker.place_order_with_retry(gtt_req)
@@ -598,6 +606,7 @@ class PortfolioManager:
                             gtt_req = OrderRequest(
                                 symbol=sig.symbol, side=OrderSide.SELL, quantity=shares,
                                 order_type=OrderType.MARKET,
+                                price=gtt_stop_limit_price(stops["stop_loss"]),
                                 is_gtt=True, gtt_trigger_price=stops["stop_loss"],
                             )
                             gtt_res = self.broker.place_order_with_retry(gtt_req)
@@ -709,6 +718,7 @@ class PortfolioManager:
                                 gtt_req = OrderRequest(
                                     symbol=best_pos.symbol, side=OrderSide.SELL,
                                     quantity=best_pos.shares, order_type=OrderType.MARKET,
+                                    price=gtt_stop_limit_price(best_pos.trailing_stop),
                                     is_gtt=True, gtt_trigger_price=best_pos.trailing_stop,
                                 )
                                 gtt_res = self.broker.place_order_with_retry(gtt_req)
@@ -899,7 +909,8 @@ class PortfolioManager:
                     continue
                 gtt_req = OrderRequest(
                     symbol=pos.symbol, side=OrderSide.SELL, quantity=pos.shares,
-                    order_type=OrderType.MARKET, is_gtt=True, gtt_trigger_price=trigger,
+                    order_type=OrderType.MARKET, price=gtt_stop_limit_price(trigger),
+                    is_gtt=True, gtt_trigger_price=trigger,
                 )
                 gtt_res = self.broker.place_order_with_retry(gtt_req)
                 if gtt_res.status in (OrderStatus.OPEN, OrderStatus.COMPLETE, OrderStatus.PENDING):

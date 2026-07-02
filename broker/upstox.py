@@ -116,6 +116,18 @@ class UpstoxBroker(BaseBroker):
             # Upstox V3: top-level "type" (SINGLE/MULTIPLE), "strategy" (ENTRY/TARGET/
             # STOPLOSS) lives per-rule, not top-level. Response is {"gtt_order_ids": [...]}.
             trigger_type = "ABOVE" if request.side.value == "BUY" else "BELOW"
+            # NSE GTT orders execute as LIMIT on trigger — there is no true market-on-
+            # trigger at the exchange level, whatever "order_type" is requested here.
+            # Without an explicit price, Upstox pegs the limit to trigger_price itself,
+            # which is unfillable the instant price gaps/moves through it (2026-07-01
+            # GOLDBEES incident: left naked all day). Callers must pass a buffered
+            # request.price — see portfolio.manager.gtt_stop_limit_price().
+            if request.price <= 0:
+                logger.warning(
+                    "[Upstox] GTT for %s has no explicit price — Upstox will peg the "
+                    "LIMIT to trigger_price (%.2f), leaving zero fill buffer on a gap.",
+                    request.symbol, request.gtt_trigger_price,
+                )
             payload = {
                 "type": "SINGLE",
                 "quantity": request.quantity,
@@ -125,7 +137,7 @@ class UpstoxBroker(BaseBroker):
                         "strategy": "ENTRY",
                         "trigger_type": trigger_type,
                         "trigger_price": request.gtt_trigger_price,
-                        "order_type": "MARKET",
+                        "order_type": "LIMIT",
                     }
                 ],
                 "instrument_token": instrument_key,
