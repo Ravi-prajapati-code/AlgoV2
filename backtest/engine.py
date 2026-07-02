@@ -44,6 +44,7 @@ from config.settings import (
     MACD_FAST, MACD_SLOW, MACD_SIGNAL, SAFE_HAVEN_SYMBOL,
     MAX_STOCK_ALLOCATION_PCT, MAX_NEW_TRADES_PER_DAY,
     ATR_TRAIL_MULT_INITIAL, GOLDBEES_PROFIT_EXIT_ONLY, GOLDBEES_MAX_LOSS_PCT,
+    NEXT_DAY_OPEN_FILL_ENABLED,
 )
 
 logger = logging.getLogger(__name__)
@@ -390,7 +391,7 @@ class BacktestEngine:
 
                         slot_cash = cash / BEAR_SWING_SLOTS
                         for symbol, rs_rank, ind in candidates[:bear_slots_free]:
-                            ep = round_to_tick(ind["close"] * (1 + SLIPPAGE_FIXED_PCT))
+                            ep = self._entry_fill_price(symbol, i, all_dates, ind["close"])
                             slot_cash_capped = min(slot_cash, portfolio_val * MAX_STOCK_ALLOCATION_PCT)
                             alloc_ok, alloc_reason = can_open_position(
                                 symbol, slot_cash_capped, portfolio_val, open_positions, prices
@@ -591,7 +592,7 @@ class BacktestEngine:
                                 logger.info(f"  [SKIP] Daily trade limit reached ({MAX_NEW_TRADES_PER_DAY})")
                                 break
                             sig = buy_signals[j]
-                            exec_price = round_to_tick(sig.price * (1 + SLIPPAGE_FIXED_PCT))
+                            exec_price = self._entry_fill_price(sig.symbol, i, all_dates, sig.price)
                             exec_date = today_ts
 
                             atr = float(sig.indicators.get("atr", 0) or 0)
@@ -861,3 +862,24 @@ class BacktestEngine:
         else:
             price = ind["close"] * (1 - SLIPPAGE_FIXED_PCT)
         return round_to_tick(price), "intraday_slip"
+
+    def _entry_fill_price(self, symbol: str, current_idx: int, all_dates: list, fallback_close: float) -> float:
+        """Entry fill price for a BUY decided off today's close.
+
+        Live trading computes signals from yesterday's close and fills at today's
+        09:17 open — a price the backtest's same-day-close fill can never replicate.
+        When NEXT_DAY_OPEN_FILL_ENABLED, fill at tomorrow's open instead (matching
+        live's actual timing). Falls back to today's close on the last day of the
+        backtest window, where there is no tomorrow to fill at.
+        """
+        if NEXT_DAY_OPEN_FILL_ENABLED:
+            next_idx = current_idx + 1
+            if next_idx < len(all_dates):
+                df = self.data.get(symbol)
+                if df is not None:
+                    ts = pd.Timestamp(all_dates[next_idx])
+                    if ts in df.index:
+                        open_px = float(df.loc[ts, "open"])
+                        if open_px > 0:
+                            return round_to_tick(open_px * (1 + SLIPPAGE_FIXED_PCT))
+        return round_to_tick(fallback_close * (1 + SLIPPAGE_FIXED_PCT))
