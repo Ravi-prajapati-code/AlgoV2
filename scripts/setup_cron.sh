@@ -5,7 +5,9 @@
 #   08:30 IST Mon-Fri  — Auto token refresh (no human needed)
 #   08:45 IST Mon-Fri  — Telegram reminder to refresh Upstox token
 #   09:20 IST Mon-Fri  — Position reconciler (DB vs Upstox)
+#   09:22 IST Mon-Fri  — GTT price-consistency audit (DB stop vs broker GTT trigger)
 #   09:25 IST Mon-Fri  — Morning P&L summary via Telegram
+#   15:40 IST Mon-Fri  — GTT coverage audit: alert on any naked (unprotected) position
 #   15:45 IST Mon-Fri  — Run paper/live daily strategy after market close
 #   15:55 IST Mon-Fri  — Health check: alert if run failed
 #   16:30 IST Mon-Fri  — Nightly DB backup (30-day retention)
@@ -53,8 +55,16 @@ RECONCILE_CRON="20 9 * * 1-5 cd $ALGO_DIR && $PYTHON $ALGO_DIR/scripts/reconcile
 # 4. Morning P&L summary (9:25 AM IST)
 PNL_CRON="25 9 * * 1-5 cd $ALGO_DIR && $PYTHON $ALGO_DIR/scripts/daily_pnl_summary.py >> $LOG_DIR/pnl_summary.log 2>&1"
 
+# 4b. GTT price-consistency audit (9:22 AM IST): DB stop vs broker GTT trigger,
+#     also flags naked/duplicate GTTs. Read-only, Telegram-alerts only.
+GTT_AUDIT_CRON="22 9 * * 1-5 cd $ALGO_DIR && $PYTHON $ALGO_DIR/monitoring/gtt_price_audit.py >> $LOG_DIR/gtt_price_audit.log 2>&1"
+
 # 5. Market close runner (3:45 PM IST Mon-Fri)
 RUNNER_CRON="45 15 * * 1-5 cd $ALGO_DIR && $RUN_CMD >> $LOG_DIR/daily_run_\$(date +\%Y\%m\%d).log 2>&1"
+
+# 4c. GTT coverage audit (3:40 PM IST): alert on any naked (unprotected) position,
+#     just before the daily runner. Schedule per monitoring/gtt_coverage.py's own docstring.
+GTT_COVERAGE_CRON="40 15 * * 1-5 cd $ALGO_DIR && $PYTHON $ALGO_DIR/monitoring/gtt_coverage.py >> $LOG_DIR/gtt_coverage.log 2>&1"
 
 # 6. Health check (3:55 PM IST): alert if today's log is empty/missing/errored
 HEALTH_CRON="55 15 * * 1-5 cd $ALGO_DIR && $PYTHON $ALGO_DIR/scripts/health_check.py >> $LOG_DIR/health.log 2>&1"
@@ -71,12 +81,14 @@ MARKER="# AlgoTrading"
 # Get existing crontab minus old Algo lines (ignore errors if no crontab yet)
 EXISTING=$(crontab -l 2>/dev/null | grep -v "$MARKER" || true)
 
-printf '%s\n%s\n%s\n%s\n%s\n%s\n%s\n%s\n%s\n' \
+printf '%s\n%s\n%s\n%s\n%s\n%s\n%s\n%s\n%s\n%s\n%s\n' \
   "$EXISTING" \
   "$AUTO_TOKEN_CRON  $MARKER:auto_token" \
   "$REMINDER_CRON    $MARKER:token_reminder" \
   "$RECONCILE_CRON   $MARKER:reconcile" \
+  "$GTT_AUDIT_CRON   $MARKER:gtt_price_audit" \
   "$PNL_CRON         $MARKER:pnl_summary" \
+  "$GTT_COVERAGE_CRON $MARKER:gtt_coverage" \
   "$RUNNER_CRON      $MARKER:daily_run" \
   "$HEALTH_CRON      $MARKER:health_check" \
   "$BACKUP_CRON      $MARKER:db_backup" \
