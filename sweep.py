@@ -38,7 +38,6 @@ def run(label, env_overrides):
 # Each key maps to list of values to sweep. Baseline value marked with *
 
 SWEEP = {
-    "UNIVERSE_TOP_N":   [40, 50, 60, 80],        # baseline: 60
     "MAX_POSITIONS":    [2, 3, 4, 5],             # baseline: 3
     "RS_THRESHOLD":     [60, 65, 72, 78, 85],     # baseline: 72
     "MIN_PROFIT_SOFT":  [0.10, 0.15, 0.20, 0.25, 0.30, 0.35],  # baseline: 0.25
@@ -49,7 +48,7 @@ SWEEP = {
 }
 
 BASELINE = {
-    "UNIVERSE_TOP_N": 60, "MAX_POSITIONS": 3, "RS_THRESHOLD": 72,
+    "MAX_POSITIONS": 3, "RS_THRESHOLD": 72,
     "MIN_PROFIT_SOFT": 0.25, "REGIME_SWITCH_DAYS": 25,
     "LAGGARD_RS": 50, "MOMENTUM_RSI": 50, "BEAR_SWING_SLOTS": 2,
 }
@@ -66,10 +65,6 @@ for param, values in SWEEP.items():
 # Phase 2: promising 2-way combos (added after phase 1 analysis)
 # These will be appended dynamically — placeholder
 combos_2way = [
-    # positions × universe
-    {"MAX_POSITIONS": 2, "UNIVERSE_TOP_N": 40},
-    {"MAX_POSITIONS": 2, "UNIVERSE_TOP_N": 50},
-    {"MAX_POSITIONS": 4, "UNIVERSE_TOP_N": 80},
     # RS × min_profit
     {"RS_THRESHOLD": 65, "MIN_PROFIT_SOFT": 0.20},
     {"RS_THRESHOLD": 78, "MIN_PROFIT_SOFT": 0.30},
@@ -86,8 +81,8 @@ combos_2way = [
     # triple combos
     {"MAX_POSITIONS": 2, "RS_THRESHOLD": 78, "MIN_PROFIT_SOFT": 0.30},
     {"MAX_POSITIONS": 4, "RS_THRESHOLD": 65, "MIN_PROFIT_SOFT": 0.20},
-    {"UNIVERSE_TOP_N": 50, "MAX_POSITIONS": 3, "RS_THRESHOLD": 65},
-    {"UNIVERSE_TOP_N": 80, "MAX_POSITIONS": 4, "RS_THRESHOLD": 65},
+    {"MAX_POSITIONS": 3, "RS_THRESHOLD": 65},
+    {"MAX_POSITIONS": 4, "RS_THRESHOLD": 65},
     {"MIN_PROFIT_SOFT": 0.20, "REGIME_SWITCH_DAYS": 20, "LAGGARD_RS": 60},
     {"MIN_PROFIT_SOFT": 0.30, "REGIME_SWITCH_DAYS": 15, "LAGGARD_RS": 40},
 ]
