@@ -278,13 +278,28 @@ class PortfolioManager:
                         add_val    = add_budget - buy_charges(add_budget).total
                         add_shares = calculate_shares_for_value(add_val, add_price)
                         if add_shares > 0:
-                            old_val = recv.shares * recv.entry_price
-                            new_val = add_shares * add_price
-                            recv.entry_price = round_to_tick((old_val + new_val) / (recv.shares + add_shares))
-                            recv.shares += add_shares
-                            self.cash -= (add_shares * add_price) + buy_charges(add_shares * add_price).total
-                            repo.save_position(recv)
-                            logger.info(f"  [SCORE-DROP-ADD] {recv.symbol:<12} +{add_shares} shares (50% split)")
+                            if self.broker:
+                                from broker.base import OrderRequest, OrderSide, OrderType, OrderStatus
+                                req = OrderRequest(
+                                    symbol=recv.symbol, side=OrderSide.BUY,
+                                    quantity=add_shares, order_type=OrderType.MARKET,
+                                )
+                                res = self.broker.place_order_with_retry(req)
+                                if res.order_id:
+                                    res = self._await_order_completion(res.order_id)
+                                if res.status != OrderStatus.COMPLETE:
+                                    logger.error(f"  [Live] SCORE-DROP-ADD failed for {recv.symbol}: {res.status}")
+                                    add_shares = 0
+                                elif res.avg_price > 0:
+                                    add_price = round_to_tick(res.avg_price)
+                            if add_shares > 0:
+                                old_val = recv.shares * recv.entry_price
+                                new_val = add_shares * add_price
+                                recv.entry_price = round_to_tick((old_val + new_val) / (recv.shares + add_shares))
+                                recv.shares += add_shares
+                                self.cash -= (add_shares * add_price) + buy_charges(add_shares * add_price).total
+                                repo.save_position(recv)
+                                logger.info(f"  [SCORE-DROP-ADD] {recv.symbol:<12} +{add_shares} shares (50% split)")
                 break  # one score-drop exit per session
 
         # ── A.3 Ride the Winner: P&L gap ≥ N% → sell worst, ALL to best ──
