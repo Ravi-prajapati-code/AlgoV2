@@ -65,14 +65,22 @@ class TestAllocator:
         assert ok is False
 
     def test_rejects_over_sector_cap(self):
-        # IT sector: TCS ₹15k, HCL ₹7.5k = ₹22.5k on ₹75k = 30% (at cap)
-        # Adding another IT stock should fail
+        # can_open_position groups by data.universe.get_sector(pos.symbol), a real
+        # symbol->sector lookup — it ignores the sector label passed to _pos(). Use
+        # symbols actually in SYMBOL_TO_SECTOR (config/watchlist_nse.py) so the test
+        # doesn't depend on DB state. TCS.NS/MPHASIS.NS/TATAELXSI.NS are all
+        # "Information Technology" in that static map.
+        #
+        # Sector cap is 67% (config/risk_config.yaml: max_sector_pct), sized for a
+        # concentrated 3-position live portfolio where a stricter cap would be
+        # unworkable. Existing IT: TCS ₹40k + MPHASIS ₹10k = ₹50k on ₹75k = 66.7%.
+        # Adding another IT stock (within the 25% per-stock cap) should tip it over.
         positions = [
-            _pos("TCS.NS",    "IT", 100, 150),   # ₹15,000
-            _pos("HCLTECH.NS","IT", 100, 75),    # ₹7,500
+            _pos("TCS.NS",     "IT", 100, 400),   # ₹40,000
+            _pos("MPHASIS.NS", "IT", 100, 100),   # ₹10,000
         ]
-        prices = {"TCS.NS": 100, "HCLTECH.NS": 100}
-        ok, reason = can_open_position("INFY.NS", 5_000, 75_000, positions, prices)
+        prices = {"TCS.NS": 100, "MPHASIS.NS": 100}
+        ok, reason = can_open_position("TATAELXSI.NS", 15_000, 75_000, positions, prices)
         assert ok is False
         assert "sector" in reason.lower()
 

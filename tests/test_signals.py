@@ -131,7 +131,10 @@ class TestExitConditions:
         assert "TRAIL_EXIT" in reason
 
     def test_laggard_exit_triggers(self):
-        ok, reason = check_exit_conditions(_make_position(), 100.0, rs_rank=40)
+        # Soft exits (laggard/momentum-decay) only fire once profit clears
+        # MIN_PROFIT_FOR_SOFT_EXIT (25% by default). Default take_profit=113.0 would
+        # fire first at that price, so disable it to isolate the laggard-exit check.
+        ok, reason = check_exit_conditions(_make_position(take_profit=0), 130.0, rs_rank=40)
         assert ok is True
         assert "LAGGARD_EXIT" in reason
 
@@ -177,13 +180,13 @@ class TestScoring:
         assert 0 <= score <= 100
 
     def test_perfect_signal_high_score(self):
-        score = score_signal(_make_ind())
+        score = score_signal(_make_ind(composite_rank=95.0))
         assert score >= 60   # Should score well with all conditions met
 
     def test_weak_signal_lower_score(self):
         weak = _make_ind(
-            rs_rank=40.0
+            composite_rank=40.0
         )
-        strong_score = score_signal(_make_ind(rs_rank=95.0))
+        strong_score = score_signal(_make_ind(composite_rank=95.0))
         weak_score   = score_signal(weak)
         assert strong_score > weak_score
