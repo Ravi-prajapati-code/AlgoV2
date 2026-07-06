@@ -227,8 +227,13 @@ class UpstoxBroker(BaseBroker):
                 rejection_reason=reason,
             )
 
-    def get_pending_gtt_orders(self, symbol: str) -> list:
-        """Return list of pending GTT order IDs for a given symbol."""
+    def get_pending_gtt_orders(self, symbol: str):
+        """Return list of pending GTT order IDs for a given symbol.
+
+        Returns None on API failure (distinct from an empty list, which means the
+        call succeeded but this symbol has no pending GTTs) so callers never
+        mistake an API error for 'nothing to cancel'. Mirrors
+        list_active_gtt_instrument_keys()."""
         try:
             resp = self._session.get(
                 f"{self._base_url.replace('/v2', '/v3')}/order/gtt",
@@ -252,7 +257,7 @@ class UpstoxBroker(BaseBroker):
             return [oid for oid in pending if oid]
         except Exception as e:
             logger.error("[Upstox] get_pending_gtt_orders(%s) failed: %s", symbol, e)
-            return []
+            return None
 
     def list_active_gtt_instrument_keys(self):
         """Return the set of instrument_keys that currently have an ACTIVE GTT order.

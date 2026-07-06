@@ -87,6 +87,45 @@ def _alert_naked_stop(symbol: str, shares, trigger, reason: str) -> None:
         logger.warning("[Alert] Failed to send naked-position alert for %s: %s", symbol, e)
 
 
+def _alert_gtt_check_uncertain(symbol: str, context: str) -> None:
+    """Telegram-alert when we could not confirm whether a stale GTT for `symbol`
+    was cancelled (lookup failed or a cancel call itself failed). Best-effort."""
+    try:
+        import html
+        from notifications.telegram import send_message
+        send_message(
+            f"⚠️ <b>GTT state unverified</b> — {html.escape(str(symbol))}\n"
+            f"Context: {html.escape(str(context))}\n"
+            f"Could not confirm old GTT(s) were cancelled. There may be a stale "
+            f"or duplicate GTT on Upstox — check manually."
+        )
+    except Exception as e:
+        logger.warning("[Alert] Failed to send GTT-uncertain alert for %s: %s", symbol, e)
+
+
+def cancel_stale_gtts(broker, symbol: str, context: str) -> bool:
+    """Cancel all pending GTT orders for `symbol` before placing a replacement or
+    a new order. Returns True only if every pending GTT was confirmed cancelled
+    (or none existed). Returns False — and raises a Telegram alert — if the
+    pending-GTT lookup itself failed (ambiguous: API error vs. truly none) or if
+    any individual cancel call failed, so callers can treat "unverified" the same
+    as "still there" instead of silently assuming it's safe to proceed."""
+    pending = broker.get_pending_gtt_orders(symbol)
+    if pending is None:
+        logger.warning("  [GTT] %s: pending-GTT lookup failed (API error) — %s", symbol, context)
+        _alert_gtt_check_uncertain(symbol, context)
+        return False
+    all_cancelled = True
+    for gtt_id in pending:
+        logger.info("  [GTT] Cancelling stale GTT %s for %s (%s)", gtt_id, symbol, context)
+        if not broker.cancel_gtt_order(gtt_id):
+            all_cancelled = False
+    if not all_cancelled:
+        logger.warning("  [GTT] %s: one or more GTT cancels failed — %s", symbol, context)
+        _alert_gtt_check_uncertain(symbol, context)
+    return all_cancelled
+
+
 class PortfolioManager:
     """Manages paper portfolio state: cash, positions, trade log."""
 
@@ -299,6 +338,7 @@ class PortfolioManager:
                                 recv.shares += add_shares
                                 self.cash -= (add_shares * add_price) + buy_charges(add_shares * add_price).total
                                 repo.save_position(recv)
+                                self._gtt_needs_refresh.add(recv.symbol)
                                 logger.info(f"  [SCORE-DROP-ADD] {recv.symbol:<12} +{add_shares} shares (50% split)")
                 break  # one score-drop exit per session
 
@@ -368,6 +408,7 @@ class PortfolioManager:
                                 best.shares += add_shares
                                 self.cash -= (add_shares * add_price) + buy_charges(add_shares * add_price).total
                                 repo.save_position(best)
+                                self._gtt_needs_refresh.add(best.symbol)
                                 logger.info(f"  [RIDE-ADD] {best.symbol:<12} +{add_shares} shares @ ₹{add_price:.2f}")
                     ride_winner_fired = True
 
@@ -440,22 +481,25 @@ class PortfolioManager:
                                 logger.info(f"  [ROTATE-ADD] {best.symbol:<12} RS={best_rs:.0f} +{add_shares} shares @ ₹{add_price:.2f}")
                                 if self.broker:
                                     from broker.base import OrderRequest, OrderSide, OrderType, OrderStatus
-                                    for gtt_id in self.broker.get_pending_gtt_orders(best.symbol):
-                                        self.broker.cancel_gtt_order(gtt_id)
-                                    gtt_req = OrderRequest(
-                                        symbol=best.symbol, side=OrderSide.SELL,
-                                        quantity=best.shares, order_type=OrderType.MARKET,
-                                        price=gtt_stop_limit_price(best.trailing_stop),
-                                        is_gtt=True, gtt_trigger_price=best.trailing_stop,
-                                    )
-                                    gtt_res = self.broker.place_order_with_retry(gtt_req)
-                                    if gtt_res.status in (OrderStatus.OPEN, OrderStatus.COMPLETE, OrderStatus.PENDING):
-                                        logger.info(f"  [Live] GTT updated after ROTATE_ADD: {best.symbol}")
-                                        self._gtt_synced_this_run.add(best.symbol)
+                                    if cancel_stale_gtts(self.broker, best.symbol, "ROTATE_ADD refresh"):
+                                        gtt_req = OrderRequest(
+                                            symbol=best.symbol, side=OrderSide.SELL,
+                                            quantity=best.shares, order_type=OrderType.MARKET,
+                                            price=gtt_stop_limit_price(best.trailing_stop),
+                                            is_gtt=True, gtt_trigger_price=best.trailing_stop,
+                                        )
+                                        gtt_res = self.broker.place_order_with_retry(gtt_req)
+                                        if gtt_res.status in (OrderStatus.OPEN, OrderStatus.COMPLETE, OrderStatus.PENDING):
+                                            logger.info(f"  [Live] GTT updated after ROTATE_ADD: {best.symbol}")
+                                            self._gtt_synced_this_run.add(best.symbol)
+                                        else:
+                                            logger.warning(f"  [Live] GTT update FAILED after ROTATE_ADD for {best.symbol}")
+                                            _alert_naked_stop(best.symbol, best.shares, best.trailing_stop,
+                                                              f"GTT update failed after ROTATE_ADD: {gtt_res.rejection_reason}")
                                     else:
-                                        logger.warning(f"  [Live] GTT update FAILED after ROTATE_ADD for {best.symbol}")
-                                        _alert_naked_stop(best.symbol, best.shares, best.trailing_stop,
-                                                          f"GTT update failed after ROTATE_ADD: {gtt_res.rejection_reason}")
+                                        # Cancel unverified — do NOT place a replacement (would risk a
+                                        # duplicate GTT). Defer to _reconcile_gtt_stops() at end of run.
+                                        self._gtt_needs_refresh.add(best.symbol)
 
         # 1. Execute SELLS
         sell_signals = [s for s in signals if s.action == "SELL"]
@@ -584,10 +628,7 @@ class PortfolioManager:
                             from broker.base import OrderRequest, OrderSide, OrderType, OrderStatus
 
                             # Cancel any pending GTT orders for this symbol before placing new order
-                            pending_gtts = self.broker.get_pending_gtt_orders(sig.symbol)
-                            for gtt_id in pending_gtts:
-                                logger.info(f"  [Live] Cancelling stale GTT {gtt_id} for {sig.symbol}")
-                                self.broker.cancel_gtt_order(gtt_id)
+                            cancel_stale_gtts(self.broker, sig.symbol, "pre-BUY cleanup")
 
                             logger.info(f"  [Live] Placing MARKET BUY for {sig.symbol} (Qty: {shares})")
                             req = OrderRequest(
@@ -728,22 +769,25 @@ class PortfolioManager:
                             # Update GTT: cancel old (wrong quantity) and place new for full position
                             if self.broker:
                                 from broker.base import OrderRequest, OrderSide, OrderType, OrderStatus
-                                for gtt_id in self.broker.get_pending_gtt_orders(best_pos.symbol):
-                                    self.broker.cancel_gtt_order(gtt_id)
-                                gtt_req = OrderRequest(
-                                    symbol=best_pos.symbol, side=OrderSide.SELL,
-                                    quantity=best_pos.shares, order_type=OrderType.MARKET,
-                                    price=gtt_stop_limit_price(best_pos.trailing_stop),
-                                    is_gtt=True, gtt_trigger_price=best_pos.trailing_stop,
-                                )
-                                gtt_res = self.broker.place_order_with_retry(gtt_req)
-                                if gtt_res.status in (OrderStatus.OPEN, OrderStatus.COMPLETE, OrderStatus.PENDING):
-                                    logger.info(f"  [Live] GTT updated after ADD: {best_pos.symbol} trigger=₹{best_pos.trailing_stop:,.2f} qty={best_pos.shares}")
-                                    self._gtt_synced_this_run.add(best_pos.symbol)
+                                if cancel_stale_gtts(self.broker, best_pos.symbol, "ADD (pyramiding) refresh"):
+                                    gtt_req = OrderRequest(
+                                        symbol=best_pos.symbol, side=OrderSide.SELL,
+                                        quantity=best_pos.shares, order_type=OrderType.MARKET,
+                                        price=gtt_stop_limit_price(best_pos.trailing_stop),
+                                        is_gtt=True, gtt_trigger_price=best_pos.trailing_stop,
+                                    )
+                                    gtt_res = self.broker.place_order_with_retry(gtt_req)
+                                    if gtt_res.status in (OrderStatus.OPEN, OrderStatus.COMPLETE, OrderStatus.PENDING):
+                                        logger.info(f"  [Live] GTT updated after ADD: {best_pos.symbol} trigger=₹{best_pos.trailing_stop:,.2f} qty={best_pos.shares}")
+                                        self._gtt_synced_this_run.add(best_pos.symbol)
+                                    else:
+                                        logger.warning(f"  [Live] GTT update FAILED after ADD for {best_pos.symbol} — monitor manually")
+                                        _alert_naked_stop(best_pos.symbol, best_pos.shares, best_pos.trailing_stop,
+                                                          f"GTT update failed after ADD: {gtt_res.rejection_reason}")
                                 else:
-                                    logger.warning(f"  [Live] GTT update FAILED after ADD for {best_pos.symbol} — monitor manually")
-                                    _alert_naked_stop(best_pos.symbol, best_pos.shares, best_pos.trailing_stop,
-                                                      f"GTT update failed after ADD: {gtt_res.rejection_reason}")
+                                    # Cancel unverified — do NOT place a replacement (would risk a
+                                    # duplicate GTT). Defer to _reconcile_gtt_stops() at end of run.
+                                    self._gtt_needs_refresh.add(best_pos.symbol)
 
         # 2.5 Ratchet broker GTT stops up to match climbed trailing stops
         self._reconcile_gtt_stops()
@@ -819,10 +863,7 @@ class PortfolioManager:
             from broker.base import OrderRequest, OrderSide, OrderType, OrderStatus
 
             # Cancel any open GTT stop-loss orders before selling — prevents double-sell
-            pending_gtts = self.broker.get_pending_gtt_orders(pos.symbol)
-            for gtt_id in pending_gtts:
-                logger.info(f"  [Live] Cancelling GTT {gtt_id} before SELL of {pos.symbol}")
-                self.broker.cancel_gtt_order(gtt_id)
+            cancel_stale_gtts(self.broker, pos.symbol, "pre-SELL cleanup")
 
             logger.info(f"  [Live] Placing MARKET SELL for {pos.symbol} (Qty: {pos.shares})")
             req = OrderRequest(
@@ -901,8 +942,10 @@ class PortfolioManager:
                 # the same position). The old GTT stays active at its old, lower
                 # trigger; gtt_price_audit.py's daily cron will flag the mismatch.
                 pending = self.broker.get_pending_gtt_orders(pos.symbol)
-                cancel_failed = False
-                for gtt_id in pending:
+                # None means the lookup itself failed (API error) — treat the same
+                # as a failed cancel, since we can't confirm the old GTT is gone.
+                cancel_failed = pending is None
+                for gtt_id in (pending or []):
                     if not self.broker.cancel_gtt_order(gtt_id):
                         cancel_failed = True
                 if cancel_failed:

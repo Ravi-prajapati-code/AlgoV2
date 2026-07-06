@@ -238,26 +238,28 @@ def sync_portfolio_with_broker(broker, today: date):
                 # Place GTT stop-loss for newly synced position (cancel-first to avoid duplicates)
                 try:
                     from broker.base import OrderRequest, OrderSide, OrderType, OrderStatus
-                    from portfolio.manager import gtt_stop_limit_price
-                    for gtt_id in broker.get_pending_gtt_orders(lp.symbol):
-                        logger.info("[Sync] Cancelling stale GTT %s for %s", gtt_id, lp.symbol)
-                        broker.cancel_gtt_order(gtt_id)
-                    gtt_req = OrderRequest(
-                        symbol=lp.symbol, side=OrderSide.SELL, quantity=lp.quantity,
-                        order_type=OrderType.MARKET,
-                        price=gtt_stop_limit_price(stops["stop_loss"]),
-                        is_gtt=True, gtt_trigger_price=stops["stop_loss"],
-                    )
-                    gtt_res = broker.place_order_with_retry(gtt_req)
-                    if gtt_res.status in (OrderStatus.OPEN, OrderStatus.COMPLETE, OrderStatus.PENDING):
-                        logger.info("[Sync] GTT stop placed for %s: trigger=₹%.2f (gtt_id=%s)",
-                                    lp.symbol, stops["stop_loss"], gtt_res.order_id)
-                    else:
-                        logger.warning("[Sync] GTT FAILED for %s: %s — set stop manually",
-                                       lp.symbol, gtt_res.rejection_reason)
-                        from portfolio.manager import _alert_naked_stop
+                    from portfolio.manager import gtt_stop_limit_price, cancel_stale_gtts, _alert_naked_stop
+                    if not cancel_stale_gtts(broker, lp.symbol, "broker-sync new position"):
+                        # Unverified cancel — don't risk a duplicate GTT. Alert instead;
+                        # there's no later in-process pass to retry this standalone script.
                         _alert_naked_stop(lp.symbol, lp.quantity, stops["stop_loss"],
-                                          f"GTT failed during broker sync: {gtt_res.rejection_reason}")
+                                          "Could not verify old GTT cancelled during broker sync")
+                    else:
+                        gtt_req = OrderRequest(
+                            symbol=lp.symbol, side=OrderSide.SELL, quantity=lp.quantity,
+                            order_type=OrderType.MARKET,
+                            price=gtt_stop_limit_price(stops["stop_loss"]),
+                            is_gtt=True, gtt_trigger_price=stops["stop_loss"],
+                        )
+                        gtt_res = broker.place_order_with_retry(gtt_req)
+                        if gtt_res.status in (OrderStatus.OPEN, OrderStatus.COMPLETE, OrderStatus.PENDING):
+                            logger.info("[Sync] GTT stop placed for %s: trigger=₹%.2f (gtt_id=%s)",
+                                        lp.symbol, stops["stop_loss"], gtt_res.order_id)
+                        else:
+                            logger.warning("[Sync] GTT FAILED for %s: %s — set stop manually",
+                                           lp.symbol, gtt_res.rejection_reason)
+                            _alert_naked_stop(lp.symbol, lp.quantity, stops["stop_loss"],
+                                              f"GTT failed during broker sync: {gtt_res.rejection_reason}")
                 except Exception as gtt_err:
                     logger.warning("[Sync] GTT placement error for %s: %s", lp.symbol, gtt_err)
 
