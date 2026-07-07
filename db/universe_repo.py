@@ -244,6 +244,104 @@ def get_history(symbol: Optional[str] = None, limit: int = 100) -> List[Dict]:
     return [dict(r) for r in rows]
 
 
+# ── STATIC WATCHLIST POINT-IN-TIME TRACKING ────────────────────────────────
+# config/watchlist_nse.py's ALL_SYMBOLS is a plain list with no dated record
+# of when symbols were added/removed, and git holds only a single squashed
+# commit for the file — so history can't be recovered after the fact. These
+# functions log dated snapshots going forward (reusing universe_history, the
+# same table the dynamic promotion/demotion state machine already logs to)
+# so that get_static_symbols_as_of() can answer "what was tradeable on date
+# X" for any date at or after tracking began, instead of a caller silently
+# substituting today's list for every historical date.
+
+STATIC_SYNC_OPERATOR = "static_watchlist_sync"
+
+
+def get_static_universe_tracking_start() -> Optional[str]:
+    """Earliest ts of any logged static-watchlist snapshot event, or None if never seeded."""
+    conn = _conn()
+    row = conn.execute(
+        "SELECT MIN(ts) AS start FROM universe_history WHERE operator = ?",
+        (STATIC_SYNC_OPERATOR,),
+    ).fetchone()
+    conn.close()
+    return row["start"] if row and row["start"] else None
+
+
+def get_static_symbols_as_of(as_of) -> Optional[List[str]]:
+    """
+    Reconstruct static-watchlist membership as of `as_of` (a date) from
+    logged static_add/static_remove events. Returns None if `as_of` predates
+    the earliest logged event — point-in-time membership before that date is
+    not knowable from any existing record, and callers must not treat None
+    as "empty universe."
+    """
+    start = get_static_universe_tracking_start()
+    if not start or as_of.isoformat() < start[:10]:
+        return None
+    conn = _conn()
+    rows = conn.execute(
+        "SELECT symbol, event, ts FROM universe_history "
+        "WHERE operator = ? AND ts <= ? ORDER BY ts ASC, id ASC",
+        (STATIC_SYNC_OPERATOR, as_of.isoformat() + " 23:59:59"),
+    ).fetchall()
+    conn.close()
+    membership: Dict[str, bool] = {}
+    for r in rows:
+        membership[r["symbol"]] = r["event"] == "static_add"
+    return sorted(sym for sym, present in membership.items() if present)
+
+
+def sync_static_universe_snapshot(current_symbols: List[str], reason: str = "sync") -> int:
+    """
+    Diff `current_symbols` (config/watchlist_nse.py's ALL_SYMBOLS) against the
+    last logged static-watchlist snapshot and log any additions/removals with
+    today's real date/time. Call this every time the static file changes —
+    tests/test_static_universe_sync.py fails if the working file and the last
+    logged snapshot ever diverge, so this can't silently go stale the way the
+    2026-06-17 revision did. The first-ever call seeds a full baseline (every
+    current symbol logged as static_add "today") — that baseline is the
+    earliest date get_static_symbols_as_of() can answer for; membership
+    before it is permanently unknowable. Returns the number of changes logged.
+
+    Timestamps are written explicitly via Python's local `datetime.now()`
+    rather than relying on the schema's CURRENT_TIMESTAMP default (which
+    SQLite evaluates in UTC) — as_of comparisons elsewhere in this module use
+    Python's local `date.today()`/caller-supplied calendar dates, and mixing
+    UTC-stored timestamps with local-date comparisons risks an off-by-one-day
+    boundary error for several hours around each local midnight.
+    """
+    now_str = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
+    conn = _conn()
+    rows = conn.execute(
+        "SELECT symbol, event, MAX(ts) AS ts FROM universe_history "
+        "WHERE operator = ? GROUP BY symbol",
+        (STATIC_SYNC_OPERATOR,),
+    ).fetchall()
+    last_known = {r["symbol"]: r["event"] for r in rows}
+    current_set = set(current_symbols)
+    changes = 0
+    for sym in current_set:
+        if last_known.get(sym) != "static_add":
+            conn.execute(
+                "INSERT INTO universe_history (symbol, event, to_status, reason, operator, ts) "
+                "VALUES (?, 'static_add', 'in_static_universe', ?, ?, ?)",
+                (sym, reason, STATIC_SYNC_OPERATOR, now_str),
+            )
+            changes += 1
+    for sym, last_event in last_known.items():
+        if last_event == "static_add" and sym not in current_set:
+            conn.execute(
+                "INSERT INTO universe_history (symbol, event, from_status, reason, operator, ts) "
+                "VALUES (?, 'static_remove', 'in_static_universe', ?, ?, ?)",
+                (sym, reason, STATIC_SYNC_OPERATOR, now_str),
+            )
+            changes += 1
+    conn.commit()
+    conn.close()
+    return changes
+
+
 # ── IPO ───────────────────────────────────────────────────────────────────
 
 def upsert_ipo(symbol: str, **kwargs):

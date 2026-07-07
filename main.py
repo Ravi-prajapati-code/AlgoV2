@@ -118,7 +118,7 @@ def cmd_update_parquet():
 def cmd_backtest(args):
     from datetime import datetime
     from data.fetcher import fetch_all, fetch_index
-    from data.universe import get_all_symbols
+    from data.universe import get_all_symbols, get_all_symbols_as_of, UniverseHistoryUnavailable
     from backtest.engine import BacktestEngine
     from backtest.reporter import run_and_report
     from db.repository import init_db
@@ -132,7 +132,17 @@ def cmd_backtest(args):
     end   = datetime.strptime(args.end,   "%Y-%m-%d").date()
 
     print(f"Fetching historical data ({start} → {end})…")
-    symbols  = get_all_symbols()
+    try:
+        symbols = get_all_symbols_as_of(start)
+    except UniverseHistoryUnavailable as e:
+        print(f"WARNING: {e}", file=sys.stderr)
+        print(
+            "WARNING: falling back to TODAY's static watchlist applied retroactively to "
+            f"{start} — this backtest's symbol selection may reflect look-ahead/survivorship "
+            "bias. See docs/13_Independent_Institutional_Review.md §2/§4/§10.",
+            file=sys.stderr,
+        )
+        symbols = get_all_symbols()
     lookback = (end - start).days + 60
     # 500-day warmup ensures EMA(150) is fully converged at backtest day 1 (needs ~450 trading days)
     from datetime import timedelta

@@ -55,14 +55,14 @@ MAX_NEW_TRADES_PER_DAY  = portfolio_cfg.get('max_new_trades_per_day', 999)
 
 # ── Allocation caps ────────────────────────────────────────────────────
 alloc_cfg = risk_cfg.get('allocation', {})
-MAX_STOCK_ALLOCATION_PCT    = 0.25  # hardcoded — 25% max per position
+MAX_STOCK_ALLOCATION_PCT    = 0.34  # hardcoded — 34% max allows full deployment over 3 positions
 MAX_SECTOR_ALLOCATION_PCT   = alloc_cfg.get('max_sector_pct', 0.50)
 
 # ── Per-trade risk limits ──────────────────────────────────────────────
 per_trade_cfg = risk_cfg.get('per_trade', {})
 MAX_RISK_PER_TRADE_PCT      = per_trade_cfg.get('max_risk_pct', 1.0)
 CASH_RESERVE_PCT            = portfolio_cfg.get('cash_reserve_pct', 0.0)
-SIZER_CASH_BUFFER_PCT       = portfolio_cfg.get('sizer_cash_buffer_pct', 0.05)
+SIZER_CASH_BUFFER_PCT       = portfolio_cfg.get('sizer_cash_buffer_pct', 0.01)
 
 # ── Drawdown protection ────────────────────────────────────────────────
 drawdown_cfg = risk_cfg.get('drawdown', {})

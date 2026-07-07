@@ -40,6 +40,8 @@ DIVERGENCE_FLAG_PCTPOINTS = {"wr": 15.0, "pf": 0.8, "sharpe": 0.6}
 def run_window(start: str, end: str) -> dict:
     cmd = ["python3", "main.py", "backtest", "--start", start, "--end", end]
     r = subprocess.run(cmd, capture_output=True, text=True)
+    if r.stderr.strip():
+        print(f"  [{start}..{end}] stderr:\n{r.stderr.strip()}")
     vals = {}
     for line in r.stdout.split("\n"):
         if "CAGR" in line: vals["cagr"] = line.split(":")[1].strip().split()[0].replace("%", "").replace("+", "")

@@ -3,6 +3,7 @@ Hybrid Scorer — Alpha-Tuned sizing factors.
 Prioritizes high-conviction momentum signals with larger allocations.
 """
 
+import os
 from typing import Dict
 
 # ── Score thresholds → size factors ───────────────────────────────────────
@@ -17,6 +18,11 @@ SCORE_BUCKETS = [
     (0,  0.00),   # REJECT
 ]
 
+# Experiment flag (docs/19 E1 uniform-sizing ablation): when set, every qualifying signal
+# (score >= 70) gets this flat size factor; the score<70 rejection is preserved so entry
+# behavior is otherwise identical. Unset = production buckets above.
+_SIZE_FACTOR_UNIFORM = os.getenv("SIZE_FACTOR_UNIFORM")
+
 def score_signal(ind: Dict) -> float:
     """
     Returns composite_rank (RS × ATR%) as the score (0-100 cross-sectional percentile).
@@ -28,6 +34,8 @@ def score_to_size_factor(score: float) -> float:
     """
     Returns a multiplier for position sizing based on signal conviction.
     """
+    if _SIZE_FACTOR_UNIFORM is not None:
+        return float(_SIZE_FACTOR_UNIFORM) if score >= 70 else 0.0
     for threshold, factor in SCORE_BUCKETS:
         if score >= threshold:
             return factor

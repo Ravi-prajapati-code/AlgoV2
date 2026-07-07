@@ -16,6 +16,7 @@ from datetime import date, timedelta
 from typing import List, Dict, Set, Optional
 
 from db import universe_repo as repo
+from config.universe_removed import REMOVED_SYMBOLS
 
 logger = logging.getLogger(__name__)
 
@@ -104,6 +105,19 @@ class UniverseManager:
             sym    = cand["symbol"]
             status = cand["status"]
 
+            # Permanent block-list: documented strategy losers must never re-enter the
+            # universe regardless of momentum score. A lockout alone (below) expires and
+            # re-admits to watchlist -- that gap is what let LAURUSLABS.NS/THERMAX.NS leak
+            # back into 'core' after their original 2026-06-17 removal. Self-heals here on
+            # every weekly refresh no matter how a block-listed symbol reached a live status.
+            if sym in REMOVED_SYMBOLS and status != "removed":
+                reason = f"blocklist: {REMOVED_SYMBOLS[sym]}"
+                repo.update_candidate_status(sym, "removed", reason=reason, operator="system")
+                summary["blocklist_removed"] = summary.get("blocklist_removed", 0) + 1
+                logger.warning("[Manager] BLOCKLIST %s (was %s) -> forced removal (%s).",
+                               sym, status, reason)
+                continue
+
             if status in ("removed", "lockout", "delisted"):
                 if status == "lockout":
                     self._check_lockout_expiry(cand, today)
@@ -136,6 +150,10 @@ class UniverseManager:
     def add_to_watchlist(self, symbol: str, name: str = "", sector: str = "",
                           market_cap_cr: float = None, isin: str = "",
                           reason: str = "scan", operator: str = "system"):
+        if symbol in REMOVED_SYMBOLS:
+            logger.info("[Manager] %s on permanent block-list (%s) -- skip add.",
+                        symbol, REMOVED_SYMBOLS[symbol])
+            return
         existing = repo.get_candidate(symbol)
         if existing:
             if existing["status"] == "lockout":
@@ -161,6 +179,10 @@ class UniverseManager:
         logger.info("[Manager] Added %s to watchlist.", symbol)
 
     def manual_promote(self, symbol: str, reason: str = "manual"):
+        if symbol in REMOVED_SYMBOLS:
+            logger.warning("[Manager] Refusing manual_promote(%s) -- on permanent block-list (%s).",
+                           symbol, REMOVED_SYMBOLS[symbol])
+            return
         cand = repo.get_candidate(symbol)
         if not cand:
             logger.warning("[Manager] %s not in universe.", symbol)

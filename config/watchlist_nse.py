@@ -1,6 +1,16 @@
 """
 NSE watchlist — Quality momentum universe, cleaned 2026-06.
 
+REQUIRED after editing ALL_SYMBOLS: run `python3 scripts/sync_static_universe.py` before
+committing. Backtests reconstruct point-in-time universe membership from dated snapshots logged
+in the DB (see db/universe_repo.py's static-watchlist tracking functions) rather than always
+applying this file's current contents to every historical date — that unconditional-current-list
+behavior is exactly the confirmed look-ahead/survivorship bias documented in
+docs/13_Independent_Institutional_Review.md (§2, §4.3, §10). An edit here with no matching sync
+call means any backtest run afterward silently reverts to treating this file's contents as always
+having applied, for every historical date — the same bug, recurring. `tests/test_static_universe_sync.py`
+checks the sync mechanism itself works, but cannot detect a forgotten sync call after a future edit.
+
 Removed categories:
   - Adani group (headline/governance risk)
   - PSU utilities & commodity PSUs (NTPC, ONGC, BPCL, GAIL, etc.)

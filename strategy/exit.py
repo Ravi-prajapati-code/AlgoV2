@@ -29,12 +29,21 @@ def initial_stops(price: float, atr: float = 0) -> dict:
 
 REGIME_AWARE_TRAIL = os.getenv("REGIME_AWARE_TRAIL", "0") == "1"
 
+# Experiment flag (docs/19 trail-ablation arm): "1" disables the trailing stop entirely — the
+# ratchet never updates and TRAIL_EXIT never fires. Hard stop, profit ceiling, soft exits and
+# crash protection are unaffected. Default "0" = production behavior unchanged.
+TRAILING_STOP_DISABLED = os.getenv("TRAILING_STOP_DISABLED", "0") == "1"
+
 def update_trailing_stop(pos: Position, current_price: float, atr: float = 0, regime: str = None) -> Position:
     """
     Ratchet up trailing stop as price rises.
     Uses ATR-based distance when atr is provided (preferred).
     Tightens the multiplier/% once profit exceeds TRAIL_TIGHTEN_THRESHOLD.
     """
+    if TRAILING_STOP_DISABLED:
+        if current_price > pos.peak_price:
+            pos.peak_price = current_price
+        return pos
     if current_price > pos.peak_price:
         pos.peak_price = current_price
         profit_pct = ((current_price / pos.entry_price) - 1) if pos.entry_price > 0 else 0.0
@@ -76,8 +85,8 @@ def check_exit_conditions(pos: Position, current_price: float, rs_rank: float = 
     if pos.take_profit > 0 and current_price >= pos.take_profit:
         return True, "PROFIT_TARGET"
 
-    # 3. Trailing Stop Loss — always applies
-    if pos.trailing_stop > 0 and current_price < pos.trailing_stop:
+    # 3. Trailing Stop Loss — always applies (unless the docs/19 ablation flag disables it)
+    if not TRAILING_STOP_DISABLED and pos.trailing_stop > 0 and current_price < pos.trailing_stop:
         return True, "TRAIL_EXIT"
 
     # Soft exits only fire once position has reached MIN_PROFIT_FOR_SOFT_EXIT
