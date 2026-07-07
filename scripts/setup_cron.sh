@@ -75,6 +75,9 @@ BACKUP_CRON="30 16 * * 1-5 cd $ALGO_DIR && $PYTHON $ALGO_DIR/scripts/backup_db.p
 # 8. Weekly universe re-rank (1:00 PM IST Friday)
 UNIVERSE_CRON="0 13 * * 5 cd $ALGO_DIR && $PYTHON $ALGO_DIR/scripts/universe_scheduler.py --mode weekly >> $LOG_DIR/universe.log 2>&1"
 
+# 8b. Daily universe safety net (12:00 PM IST Mon-Fri)
+UNIVERSE_DAILY_CRON="0 12 * * 1-5 cd $ALGO_DIR && $PYTHON $ALGO_DIR/scripts/universe_scheduler.py --mode daily >> $LOG_DIR/universe_daily.log 2>&1"
+
 # ── Install into crontab ───────────────────────────────────────────────────
 MARKER="# AlgoTrading"
 
@@ -93,6 +96,7 @@ printf '%s\n%s\n%s\n%s\n%s\n%s\n%s\n%s\n%s\n%s\n%s\n' \
   "$HEALTH_CRON      $MARKER:health_check" \
   "$BACKUP_CRON      $MARKER:db_backup" \
   "$UNIVERSE_CRON    $MARKER:universe_weekly" \
+  "$UNIVERSE_DAILY_CRON $MARKER:universe_daily" \
   | crontab -
 
 echo "Cron jobs installed:"
