@@ -60,7 +60,7 @@ MAX_SECTOR_ALLOCATION_PCT   = alloc_cfg.get('max_sector_pct', 0.50)
 
 # ── Per-trade risk limits ──────────────────────────────────────────────
 per_trade_cfg = risk_cfg.get('per_trade', {})
-MAX_RISK_PER_TRADE_PCT      = per_trade_cfg.get('max_risk_pct', 1.0)
+MAX_RISK_PER_TRADE_PCT      = per_trade_cfg.get('max_risk_pct', 0.5) # Lowered to 0.5% to manage MDD with 34% allocations
 CASH_RESERVE_PCT            = portfolio_cfg.get('cash_reserve_pct', 0.0)
 SIZER_CASH_BUFFER_PCT       = portfolio_cfg.get('sizer_cash_buffer_pct', 0.01)
 
@@ -84,7 +84,7 @@ EMA_FAST                = entry_cfg.get('ema_fast', 20)
 EMA_SLOW                = entry_cfg.get('ema_slow', 100)
 EMA_CROSSOVER_LOOKBACK  = entry_cfg.get('ema_crossover_lookback', 5)
 RSI_PERIOD              = entry_cfg.get('rsi_period', 14)
-RSI_BUY_MIN             = entry_cfg.get('rsi_buy_min', 55)
+RSI_BUY_MIN             = entry_cfg.get('rsi_buy_min', 50)
 RSI_BUY_MAX             = entry_cfg.get('rsi_buy_max', 85)
 MACD_FAST               = entry_cfg.get('macd_fast', 12)
 MACD_SLOW               = entry_cfg.get('macd_slow', 26)

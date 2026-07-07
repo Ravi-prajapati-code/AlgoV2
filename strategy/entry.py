@@ -73,8 +73,17 @@ def check_entry(
     if 0 < turnover < MIN_DAILY_TURNOVER:
         return False, f"Low liquidity (₹{turnover/1e6:.1f}M < ₹{MIN_DAILY_TURNOVER/1e6:.0f}M)"
 
-    # 8. Trend Strength: 50 EMA must be above 100 EMA
-    if close > ema_50 and ema_50 > ema_100:
-        return True, f"STRENGTH_CONFIRMED_BUY (RS:{rs_rank:.1f})"
-
-    return False, "Weak Trend (EMA 50/100 spread < 1%)"
+    # 8. Institutional Trend Strength: EMA, SuperTrend, ADX alignment
+    adx = float(ind.get("adx", 0))
+    st_dir = ind.get("st_direction", "down")
+    
+    if not (close > ema_50 and ema_50 > ema_100):
+        return False, "Weak Trend (Price or EMAs not aligned)"
+        
+    if st_dir != "up":
+        return False, "SuperTrend is bearish"
+        
+    if adx < 20.0:
+        return False, f"Weak ADX trend strength ({adx:.1f} < 20)"
+        
+    return True, f"STRENGTH_CONFIRMED (RS:{rs_rank:.1f}, ADX:{adx:.1f})"
