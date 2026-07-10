@@ -39,9 +39,9 @@ from config.settings import (
     MAX_OPEN_POSITIONS, EXECUTION_TIMES,
     RS_THRESHOLD, DRAWDOWN_KILL_SWITCH_PCT, DRAWDOWN_REDUCE_SIZE_PCT, DRAWDOWN_REDUCE_TIER2_MULT,
     MACD_FAST, MACD_SLOW, MACD_SIGNAL, SAFE_HAVEN_SYMBOL,
-    MAX_STOCK_ALLOCATION_PCT, MAX_NEW_TRADES_PER_DAY,
+    MAX_STOCK_ALLOCATION_PCT, MAX_NEW_TRADES_PER_DAY, SIZER_CASH_BUFFER_PCT,
     GOLDBEES_PROFIT_EXIT_ONLY, GOLDBEES_MAX_LOSS_PCT,
-    NEXT_DAY_OPEN_FILL_ENABLED, REGIME_SMOOTHING_ENABLED,
+    NEXT_DAY_CLOSE_FILL_ENABLED, REGIME_SMOOTHING_ENABLED,
     REPLACE_MIN_NEW_RS, REPLACE_MAX_HELD_RS, REPLACE_MIN_GAP, MIN_PROFIT_SOFT,
 )
 
@@ -349,7 +349,7 @@ class BacktestEngine:
                         )
                         if not exit_triggered:
                             continue
-                        ep = round_to_tick(cp * (1 - SLIPPAGE_FIXED_PCT))
+                        ep = self._lagged_fill_price(pos.symbol, i, all_dates, cp, "sell")
                         pnl_data = net_pnl(pos.entry_price, ep, pos.shares)
                         result.trades.append(Trade(
                             symbol=pos.symbol, sector=pos.sector,
@@ -401,7 +401,7 @@ class BacktestEngine:
 
                         slot_cash = cash / BEAR_SWING_SLOTS
                         for symbol, rs_rank, ind in candidates[:bear_slots_free]:
-                            ep = self._entry_fill_price(symbol, i, all_dates, ind["close"])
+                            ep = self._lagged_fill_price(symbol, i, all_dates, ind["close"], "buy")
                             slot_cash_capped = min(slot_cash, portfolio_val * MAX_STOCK_ALLOCATION_PCT)
                             alloc_ok, alloc_reason = can_open_position(
                                 symbol, slot_cash_capped, portfolio_val, open_positions, prices
@@ -491,7 +491,7 @@ class BacktestEngine:
                     if not pos: continue
                     
                     # Execute at the signal price (the minute price) minus slippage
-                    exec_price = round_to_tick(sig.price * (1 - SLIPPAGE_FIXED_PCT))
+                    exec_price = self._lagged_fill_price(sig.symbol, i, all_dates, sig.price, "sell")
                     exec_date = today_ts
 
                     # Profit-only exit for GOLDBEES: defer sell until price ≥ entry
@@ -575,7 +575,7 @@ class BacktestEngine:
                                 and weakest_rs <= REPLACE_MAX_HELD_RS
                                 and (best_cand.score - weakest_rs) >= REPLACE_MIN_GAP
                                 and weakest_profit >= MIN_PROFIT_SOFT):
-                            ep = round_to_tick(prices.get(weakest.symbol, weakest.entry_price) * (1 - SLIPPAGE_FIXED_PCT))
+                            ep = self._lagged_fill_price(weakest.symbol, i, all_dates, prices.get(weakest.symbol, weakest.entry_price), "sell")
                             pnl_r = net_pnl(weakest.entry_price, ep, weakest.shares)
                             result.trades.append(Trade(
                                 symbol=weakest.symbol, sector=weakest.sector,
@@ -605,7 +605,10 @@ class BacktestEngine:
                     num_to_buy = min(len(buy_signals), available_slots)
 
                     if num_to_buy > 0:
-                        base_slot_cash = cash / available_slots
+                        # Reserve buffer so charges don't cause order rejection — matches
+                        # portfolio/manager.py's live sizer (parity fix).
+                        spendable = cash * (1.0 - SIZER_CASH_BUFFER_PCT)
+                        base_slot_cash = spendable / available_slots
                         # Graduated size reduction under drawdown
                         if current_dd >= DRAWDOWN_REDUCE_SIZE_PCT * DRAWDOWN_REDUCE_TIER2_MULT:
                             base_slot_cash *= 0.25
@@ -616,7 +619,7 @@ class BacktestEngine:
                                 logger.info(f"  [SKIP] Daily trade limit reached ({MAX_NEW_TRADES_PER_DAY})")
                                 break
                             sig = buy_signals[j]
-                            exec_price = self._entry_fill_price(sig.symbol, i, all_dates, sig.price)
+                            exec_price = self._lagged_fill_price(sig.symbol, i, all_dates, sig.price, "buy")
                             exec_date = today_ts
 
                             atr = float(sig.indicators.get("atr", 0) or 0)
@@ -912,23 +915,28 @@ class BacktestEngine:
             price = ind["close"] * (1 - SLIPPAGE_FIXED_PCT)
         return round_to_tick(price), "intraday_slip"
 
-    def _entry_fill_price(self, symbol: str, current_idx: int, all_dates: list, fallback_close: float) -> float:
-        """Entry fill price for a BUY decided off today's close.
+    def _lagged_fill_price(self, symbol: str, current_idx: int, all_dates: list, fallback_close: float, side: str) -> float:
+        """Fill price for a BUY or SELL decided off today's close.
 
-        Live trading computes signals from yesterday's close and fills at today's
-        09:17 open — a price the backtest's same-day-close fill can never replicate.
-        When NEXT_DAY_OPEN_FILL_ENABLED, fill at tomorrow's open instead (matching
-        live's actual timing). Falls back to today's close on the last day of the
-        backtest window, where there is no tomorrow to fill at.
+        Live trading (both entries and exits) computes signals from yesterday's
+        close and places a same-day market order that fills near today's close
+        (runner/daily_runner.py runs at ~14:50 IST, a direct market order, not an
+        AMO at the open) — a price the backtest's same-bar-close fill can never
+        replicate. When NEXT_DAY_CLOSE_FILL_ENABLED, fill at tomorrow's close
+        instead (matching live's actual day-lag). Falls back to today's close on
+        the last day of the backtest window, where there is no tomorrow to fill at.
+
+        side: "buy" applies positive slippage, "sell" applies negative slippage.
         """
-        if NEXT_DAY_OPEN_FILL_ENABLED:
+        sign = 1 if side == "buy" else -1
+        if NEXT_DAY_CLOSE_FILL_ENABLED:
             next_idx = current_idx + 1
             if next_idx < len(all_dates):
                 df = self.data.get(symbol)
                 if df is not None:
                     ts = pd.Timestamp(all_dates[next_idx])
                     if ts in df.index:
-                        open_px = float(df.loc[ts, "open"])
-                        if open_px > 0:
-                            return round_to_tick(open_px * (1 + SLIPPAGE_FIXED_PCT))
-        return round_to_tick(fallback_close * (1 + SLIPPAGE_FIXED_PCT))
+                        close_px = float(df.loc[ts, "close"])
+                        if close_px > 0:
+                            return round_to_tick(close_px * (1 + sign * SLIPPAGE_FIXED_PCT))
+        return round_to_tick(fallback_close * (1 + sign * SLIPPAGE_FIXED_PCT))

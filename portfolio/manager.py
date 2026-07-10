@@ -6,7 +6,6 @@ Surgical Logging: Only actual BUY/SELL executions are logged.
 import json
 import logging
 import os
-from collections import deque
 from datetime import date
 from typing import List, Dict
 
@@ -16,11 +15,15 @@ from db.repository import total_capital_injected_ever
 from portfolio.sizer import calculate_shares_for_value, position_value
 from portfolio.allocator import can_open_position, portfolio_invested_value
 from portfolio.risk import can_open_new_trades
-from strategy.scoring import score_to_size_factor
-from strategy.exit import initial_stops, update_trailing_stop
+from strategy.exit import initial_stops
 from charges.calculator import net_pnl, buy_charges
-from broker.base import BaseBroker, OrderSide, OrderType, OrderRequest
-from config.settings import INITIAL_CAPITAL, round_to_tick, MAX_OPEN_POSITIONS, SAFE_HAVEN_SYMBOL, SIZER_CASH_BUFFER_PCT, MAX_STOCK_ALLOCATION_PCT, DRAWDOWN_REDUCE_SIZE_PCT, DRAWDOWN_REDUCE_TIER2_MULT, GTT_LIMIT_BUFFER_PCT
+from broker.base import BaseBroker
+from config.settings import (
+    INITIAL_CAPITAL, round_to_tick, MAX_OPEN_POSITIONS, SAFE_HAVEN_SYMBOL, SIZER_CASH_BUFFER_PCT,
+    MAX_STOCK_ALLOCATION_PCT, DRAWDOWN_REDUCE_SIZE_PCT, DRAWDOWN_REDUCE_TIER2_MULT, GTT_LIMIT_BUFFER_PCT,
+    REPLACE_MIN_NEW_RS, REPLACE_MAX_HELD_RS, REPLACE_MIN_GAP, MIN_PROFIT_SOFT,
+    MAX_NEW_TRADES_PER_DAY, DRAWDOWN_KILL_SWITCH_PCT,
+)
 from strategy.defensive_portfolio import (
     ROTATION_ENABLED, ROTATE_EXIT_RS, ROTATE_INTO_RS, ROTATE_MIN_GAP,
     RIDE_WINNER_ENABLED, RIDE_WINNER_GAP_PCT,
@@ -227,50 +230,11 @@ class PortfolioManager:
     def process_signals(self, today: date, signals: List[Signal], prices: dict, indicators: dict = None, regime: str = None, fund_injection: float = 0.0):
         """Process today's signals: Exits first, then dynamic batch entries."""
         self.new_trades_today = 0
-        # Symbols whose GTT was (re)placed during this run (BUY/ADD/ROTATE) — the
-        # end-of-run GTT reconcile skips these to avoid redundant cancel/replace.
-        self._gtt_synced_this_run = set()
-        # Symbols whose trailing stop ratcheted UP this run — broker GTT must follow.
-        self._gtt_needs_refresh = set()
-
-        # ── A. Update Trailing Stops for existing positions (ATR-aware) ──
-        # GOLDBEES (SAFE_HAVEN_SYMBOL) is excluded: it's a static-floor hedge position
-        # (exited only via GOLDBEES_MAX_LOSS_PCT or a BULL regime flip, in strategy/signals.py),
-        # not a momentum stock — it must not be ratcheted/tightened by this ATR trail logic.
-        for pos in list(self.open_positions):
-            if pos.symbol == SAFE_HAVEN_SYMBOL:
-                continue
-            cp = prices.get(pos.symbol)
-            if cp:
-                atr = (indicators or {}).get(pos.symbol, {}).get('atr', 0)
-                old_trail = pos.trailing_stop
-                old_peak = pos.peak_price
-                update_trailing_stop(pos, cp, atr=atr, regime=regime)
-                if pos.trailing_stop >= cp:
-                    # A regime-aware ratchet can jump the stop by more than the day's
-                    # move, landing the new trigger at/above current price. A GTT placed
-                    # there would fire immediately — but Upstox executes GTT-SINGLE as a
-                    # LIMIT sell at the exact trigger price (ignores our MARKET order_type),
-                    # which is unfillable once price is already below it, so it gets
-                    # auto-cancelled and leaves the position naked (2026-07-01 GOLDBEES
-                    # incident). Exit now via a real market sell instead of racing a GTT.
-                    logger.warning(
-                        f"  [TRAIL-BREACH] {pos.symbol} new stop ₹{pos.trailing_stop:.2f} "
-                        f"already ≥ price ₹{cp:.2f} — exiting immediately instead of GTT"
-                    )
-                    breach_sig = Signal(
-                        date=today, symbol=pos.symbol, action="SELL",
-                        score=0, price=cp, reason="TRAIL_BREACH_IMMEDIATE",
-                    )
-                    self._execute_sell(today, pos, breach_sig, prices)
-                    continue
-                if pos.trailing_stop > old_trail:
-                    self._gtt_needs_refresh.add(pos.symbol)
-                # Persist the ratchet immediately — otherwise trailing_stop/peak_price only
-                # exist in memory for this run and reset to stale values on next load, even
-                # though the broker-side GTT was already updated to the new (correct) level.
-                if pos.trailing_stop != old_trail or pos.peak_price != old_peak:
-                    repo.save_position(pos)
+        # Stop-loss/trailing-stop GTTs removed — positions now exit only on the
+        # system's own sell signals, executed as real market sells (see _execute_sell).
+        if self.broker:
+            for pos in self.open_positions:
+                cancel_stale_gtts(self.broker, pos.symbol, "signal-only mode — legacy stop GTT cleanup")
 
         # ── A.1 Update composite score history (load → append today → save) ──
         score_history = _load_score_history()
@@ -338,7 +302,6 @@ class PortfolioManager:
                                 recv.shares += add_shares
                                 self.cash -= (add_shares * add_price) + buy_charges(add_shares * add_price).total
                                 repo.save_position(recv)
-                                self._gtt_needs_refresh.add(recv.symbol)
                                 logger.info(f"  [SCORE-DROP-ADD] {recv.symbol:<12} +{add_shares} shares (50% split)")
                 break  # one score-drop exit per session
 
@@ -408,12 +371,11 @@ class PortfolioManager:
                                 best.shares += add_shares
                                 self.cash -= (add_shares * add_price) + buy_charges(add_shares * add_price).total
                                 repo.save_position(best)
-                                self._gtt_needs_refresh.add(best.symbol)
                                 logger.info(f"  [RIDE-ADD] {best.symbol:<12} +{add_shares} shares @ ₹{add_price:.2f}")
                     ride_winner_fired = True
 
         # 0.5 Rotation: exit laggard → add to winner (before signal execution)
-        # Must run before sell signals so LAGGARD_EXIT can't steal the loser first.
+        # Must run before sell signals so a soft exit (e.g. MOMENTUM_DECAY) can't steal the loser first.
         # Skip if ride-winner already acted this session.
         if ROTATION_ENABLED and not ride_winner_fired:
             non_def = [p for p in self.open_positions
@@ -480,26 +442,7 @@ class PortfolioManager:
                                 repo.save_position(best)
                                 logger.info(f"  [ROTATE-ADD] {best.symbol:<12} RS={best_rs:.0f} +{add_shares} shares @ ₹{add_price:.2f}")
                                 if self.broker:
-                                    from broker.base import OrderRequest, OrderSide, OrderType, OrderStatus
-                                    if cancel_stale_gtts(self.broker, best.symbol, "ROTATE_ADD refresh"):
-                                        gtt_req = OrderRequest(
-                                            symbol=best.symbol, side=OrderSide.SELL,
-                                            quantity=best.shares, order_type=OrderType.MARKET,
-                                            price=gtt_stop_limit_price(best.trailing_stop),
-                                            is_gtt=True, gtt_trigger_price=best.trailing_stop,
-                                        )
-                                        gtt_res = self.broker.place_order_with_retry(gtt_req)
-                                        if gtt_res.status in (OrderStatus.OPEN, OrderStatus.COMPLETE, OrderStatus.PENDING):
-                                            logger.info(f"  [Live] GTT updated after ROTATE_ADD: {best.symbol}")
-                                            self._gtt_synced_this_run.add(best.symbol)
-                                        else:
-                                            logger.warning(f"  [Live] GTT update FAILED after ROTATE_ADD for {best.symbol}")
-                                            _alert_naked_stop(best.symbol, best.shares, best.trailing_stop,
-                                                              f"GTT update failed after ROTATE_ADD: {gtt_res.rejection_reason}")
-                                    else:
-                                        # Cancel unverified — do NOT place a replacement (would risk a
-                                        # duplicate GTT). Defer to _reconcile_gtt_stops() at end of run.
-                                        self._gtt_needs_refresh.add(best.symbol)
+                                    cancel_stale_gtts(self.broker, best.symbol, "ROTATE_ADD refresh — stop-loss/trail removed")
 
         # 1. Execute SELLS
         sell_signals = [s for s in signals if s.action == "SELL"]
@@ -514,19 +457,24 @@ class PortfolioManager:
         portfolio_val = self.portfolio_value(prices)
 
         # ── Rank replacement: if slots full and a meaningfully stronger stock is waiting,
-        # evict the weakest holder so the top candidate can enter this session ──────────
-        REPLACE_MIN_NEW_RS  = 85.0
-        REPLACE_MAX_HELD_RS = 55.0
-        REPLACE_MIN_GAP     = 25.0
-        if buy_signals and available_slots == 0:
+        # evict the weakest holder so the top candidate can enter this session. Mirrors
+        # backtest/engine.py's replace-eviction gate: rs_rank (not composite_rank),
+        # MIN_PROFIT_SOFT gate, is_defensive_symbol exclusion (not just SAFE_HAVEN_SYMBOL),
+        # a risk guard (new-trades/drawdown), and the cash check pulled inside the eviction
+        # condition so a low-cash day can't produce a pure eviction with no replacement buy.
+        pre_replace_dd = (self.peak_value - portfolio_val) / self.peak_value if self.peak_value > 0 else 0.0
+        replace_risk_ok = (self.new_trades_today < MAX_NEW_TRADES_PER_DAY) and (pre_replace_dd < DRAWDOWN_KILL_SWITCH_PCT)
+        if buy_signals and available_slots == 0 and replace_risk_ok and self.cash > (portfolio_val * 0.005):
             best_cand = buy_signals[0]
-            non_haven = [p for p in self.open_positions if p.symbol != SAFE_HAVEN_SYMBOL]
-            if non_haven:
-                weakest = min(non_haven, key=lambda p: (indicators or {}).get(p.symbol, {}).get("composite_rank", 101))
-                weakest_rs = float((indicators or {}).get(weakest.symbol, {}).get("composite_rank", 101))
+            non_def = [p for p in self.open_positions if not is_defensive_symbol(p.symbol)]
+            if non_def:
+                weakest = min(non_def, key=lambda p: (indicators or {}).get(p.symbol, {}).get("rs_rank", 101))
+                weakest_rs = float((indicators or {}).get(weakest.symbol, {}).get("rs_rank", 101))
+                weakest_profit = ((prices.get(weakest.symbol, weakest.entry_price) / weakest.entry_price) - 1) if weakest.entry_price > 0 else 0.0
                 if (best_cand.score >= REPLACE_MIN_NEW_RS
                         and weakest_rs <= REPLACE_MAX_HELD_RS
-                        and (best_cand.score - weakest_rs) >= REPLACE_MIN_GAP):
+                        and (best_cand.score - weakest_rs) >= REPLACE_MIN_GAP
+                        and weakest_profit >= MIN_PROFIT_SOFT):
                     logger.info(
                         f"  [REPLACE] {weakest.symbol} RS={weakest_rs:.0f} evicted "
                         f"→ {best_cand.symbol} RS={best_cand.score:.0f}"
@@ -658,20 +606,7 @@ class PortfolioManager:
                                     f"using estimate ₹{price:.2f} — sync will reconcile."
                                 )
 
-                            # Place GTT stop-loss: auto-SELL if price drops to stop_loss (best-effort)
-                            gtt_req = OrderRequest(
-                                symbol=sig.symbol, side=OrderSide.SELL, quantity=shares,
-                                order_type=OrderType.MARKET,
-                                price=gtt_stop_limit_price(stops["stop_loss"]),
-                                is_gtt=True, gtt_trigger_price=stops["stop_loss"],
-                            )
-                            gtt_res = self.broker.place_order_with_retry(gtt_req)
-                            if gtt_res.status in (OrderStatus.OPEN, OrderStatus.COMPLETE, OrderStatus.PENDING):
-                                logger.info(f"  [Live] GTT stop-loss placed: {sig.symbol} trigger=₹{stops['stop_loss']:,.2f} (gtt_id={gtt_res.order_id})")
-                                self._gtt_synced_this_run.add(sig.symbol)
-                            else:
-                                logger.warning(f"  [Live] GTT stop-loss FAILED for {sig.symbol}: {gtt_res.rejection_reason} — monitor manually")
-                                _alert_naked_stop(sig.symbol, shares, stops["stop_loss"], gtt_res.rejection_reason)
+                            # Stop-loss/trailing-stop GTT removed — exit is signal-only now.
 
                             # Add position locally so subsequent signals see correct slot count
                             # (broker sync will reconcile shares/price on next run)
@@ -766,31 +701,8 @@ class PortfolioManager:
                             self.cash -= (add_shares * price) + buy_charges(add_shares * price).total
                             repo.save_position(best_pos)
 
-                            # Update GTT: cancel old (wrong quantity) and place new for full position
                             if self.broker:
-                                from broker.base import OrderRequest, OrderSide, OrderType, OrderStatus
-                                if cancel_stale_gtts(self.broker, best_pos.symbol, "ADD (pyramiding) refresh"):
-                                    gtt_req = OrderRequest(
-                                        symbol=best_pos.symbol, side=OrderSide.SELL,
-                                        quantity=best_pos.shares, order_type=OrderType.MARKET,
-                                        price=gtt_stop_limit_price(best_pos.trailing_stop),
-                                        is_gtt=True, gtt_trigger_price=best_pos.trailing_stop,
-                                    )
-                                    gtt_res = self.broker.place_order_with_retry(gtt_req)
-                                    if gtt_res.status in (OrderStatus.OPEN, OrderStatus.COMPLETE, OrderStatus.PENDING):
-                                        logger.info(f"  [Live] GTT updated after ADD: {best_pos.symbol} trigger=₹{best_pos.trailing_stop:,.2f} qty={best_pos.shares}")
-                                        self._gtt_synced_this_run.add(best_pos.symbol)
-                                    else:
-                                        logger.warning(f"  [Live] GTT update FAILED after ADD for {best_pos.symbol} — monitor manually")
-                                        _alert_naked_stop(best_pos.symbol, best_pos.shares, best_pos.trailing_stop,
-                                                          f"GTT update failed after ADD: {gtt_res.rejection_reason}")
-                                else:
-                                    # Cancel unverified — do NOT place a replacement (would risk a
-                                    # duplicate GTT). Defer to _reconcile_gtt_stops() at end of run.
-                                    self._gtt_needs_refresh.add(best_pos.symbol)
-
-        # 2.5 Ratchet broker GTT stops up to match climbed trailing stops
-        self._reconcile_gtt_stops()
+                                cancel_stale_gtts(self.broker, best_pos.symbol, "ADD (pyramiding) refresh — stop-loss/trail removed")
 
         # 3. Save Daily Snapshot
         # Re-sync cash from broker — detect any external deposits before updating self.cash
@@ -916,66 +828,4 @@ class PortfolioManager:
         self.cash += (price * pos.shares) - result["sell_charges"]["total"]
         self.open_positions = [p for p in self.open_positions if p.symbol != pos.symbol]
 
-    def _reconcile_gtt_stops(self):
-        """Ratchet broker-side GTT stop-loss up to each position's current trailing
-        stop. Without this, the GTT placed at entry sits at the original hard stop
-        while the daily-updated trailing stop climbs — leaving the broker safety net
-        stale. Only refreshes positions whose trailing stop moved UP this run and
-        that were not already (re)placed by a BUY/ADD/ROTATE this session, to avoid
-        needless cancel/replace churn."""
-        if not self.broker:
-            return
-        from broker.base import OrderRequest, OrderSide, OrderType, OrderStatus
 
-        targets = self._gtt_needs_refresh - self._gtt_synced_this_run
-        for pos in list(self.open_positions):
-            if pos.symbol not in targets:
-                continue
-            trigger = pos.trailing_stop if (pos.trailing_stop and pos.trailing_stop > 0) else pos.stop_loss
-            if trigger <= 0 or pos.shares <= 0:
-                continue
-            try:
-                # Cancel-first to avoid duplicate GTTs, then place at the new trigger.
-                # If any cancel fails, do NOT place a replacement — a single stale GTT
-                # is safer than a duplicate live sell order (the 2026-07-01 CGPOWER
-                # incident: a failed cancel + unconditional replace left two GTTs on
-                # the same position). The old GTT stays active at its old, lower
-                # trigger; gtt_price_audit.py's daily cron will flag the mismatch.
-                pending = self.broker.get_pending_gtt_orders(pos.symbol)
-                # None means the lookup itself failed (API error) — treat the same
-                # as a failed cancel, since we can't confirm the old GTT is gone.
-                cancel_failed = pending is None
-                for gtt_id in (pending or []):
-                    if not self.broker.cancel_gtt_order(gtt_id):
-                        cancel_failed = True
-                if cancel_failed:
-                    logger.warning(
-                        "  [GTT-Sync] %s cancel of stale GTT failed — skipping "
-                        "refresh to avoid a duplicate GTT", pos.symbol
-                    )
-                    try:
-                        import html
-                        from notifications.telegram import send_message
-                        send_message(
-                            f"⚠️ <b>GTT ratchet skipped</b> — {html.escape(pos.symbol)}\n"
-                            f"Cancel of old GTT failed; new stop ₹{trigger:,.2f} was NOT "
-                            f"placed to avoid a duplicate.\n"
-                            f"Old GTT (stale, lower trigger) is still active. Check Upstox manually."
-                        )
-                    except Exception as e:
-                        logger.warning("[Alert] Failed to send GTT-skip alert for %s: %s", pos.symbol, e)
-                    continue
-                gtt_req = OrderRequest(
-                    symbol=pos.symbol, side=OrderSide.SELL, quantity=pos.shares,
-                    order_type=OrderType.MARKET, price=gtt_stop_limit_price(trigger),
-                    is_gtt=True, gtt_trigger_price=trigger,
-                )
-                gtt_res = self.broker.place_order_with_retry(gtt_req)
-                if gtt_res.status in (OrderStatus.OPEN, OrderStatus.COMPLETE, OrderStatus.PENDING):
-                    logger.info("  [GTT-Sync] %s stop ratcheted → ₹%.2f", pos.symbol, trigger)
-                else:
-                    logger.warning("  [GTT-Sync] %s GTT refresh FAILED: %s", pos.symbol, gtt_res.rejection_reason)
-                    _alert_naked_stop(pos.symbol, pos.shares, trigger,
-                                      f"GTT ratchet refresh failed: {gtt_res.rejection_reason}")
-            except Exception as e:
-                logger.warning("  [GTT-Sync] %s reconcile error: %s", pos.symbol, e)

@@ -125,13 +125,20 @@ REPLACE_MIN_GAP     = float(os.getenv("REPLACE_MIN_GAP", "25.0"))
 MIN_PROFIT_SOFT     = float(os.getenv("MIN_PROFIT_SOFT", "0.25"))
 ENTRY_MODE_SEED = int(os.getenv("ENTRY_MODE_SEED", "42"))
 
-# Backtest-only realism fix: entries fill at the NEXT trading day's open, matching
-# live's actual timing (signal from yesterday's close, fill at today's 09:17 open).
-# On by default as of 2026-07-02 — A/B validated against the prior same-day-close
-# fill (CAGR +40.89%→+32.28%, Sharpe 2.10→1.72, MDD 13.96%→18.68% on 2022-01-01→
-# 2026-06-30, same trade count) and adopted as the realistic baseline. Set
-# NEXT_DAY_OPEN_FILL=false to reproduce the old (optimistic) same-day-close numbers.
-NEXT_DAY_OPEN_FILL_ENABLED = os.getenv("NEXT_DAY_OPEN_FILL", "true").lower() in ("true", "1", "yes")
+# Backtest-only realism fix: both entries and exits fill at the NEXT trading
+# day's close, matching live's actual timing. Live's daily-candle data only
+# finalizes at market close, so a run at ~14:50 IST decides using YESTERDAY's
+# close and places a same-day market order that fills near TODAY's close (not
+# today's open — runner/daily_runner.py runs a direct market order at 14:50,
+# ~40min before the 15:30 close, no AMO). Originally introduced 2026-07-02 as
+# a next-day-OPEN fill for entries only (A/B validated CAGR +40.89%→+32.28%,
+# Sharpe 2.10→1.72, MDD 13.96%→18.68% vs the old same-day-close fill on
+# 2022-01-01→2026-06-30). Corrected 2026-07-10 to next-day-CLOSE and extended
+# to exits, which had been left on the old zero-lag same-day-close fill this
+# whole time (decide-and-fill off the exact same bar — a look-ahead artifact
+# inconsistent with the entry-side fix). Set NEXT_DAY_CLOSE_FILL=false to
+# reproduce the old (fully optimistic, same-day-close, zero-lag) numbers.
+NEXT_DAY_CLOSE_FILL_ENABLED = os.getenv("NEXT_DAY_CLOSE_FILL", "true").lower() in ("true", "1", "yes")
 
 # Backtest-only correctness fix: live (runner/daily_runner.py) computes regime via
 # strategy.regime.detect_regime() — a 3-day-confirm + 65%-of-20-days-hysteresis
