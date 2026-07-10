@@ -1306,3 +1306,128 @@ edge, so "unproven in backtest" isn't the same evidence standard as
 Verified via import smoke test + full default backtest: still exactly
 405 trades post-cleanup — confirms all changes were pure code
 deletion with zero behavior change to what was already running live.
+
+## §XXVIII. Backtest/live fidelity fix — fill timing, replacement parity, cash buffer (2026-07-10)
+
+User asked directly: "is the backtest similar to live?" A research pass
+found 5 divergences. Fixing them surfaced 2 more. All 7 fixed in one
+commit (`df9856f`). This section documents each divergence, the fix, and
+what changed as a result.
+
+**#1 — exit fill timing had zero lag (new, found while fixing this).**
+The 2026-07-02 realism fix (`NEXT_DAY_OPEN_FILL_ENABLED`) only ever
+applied to entries. Exits were still decided-and-filled off the exact
+same bar's close — a look-ahead artifact that survived every backtest
+run between 2026-07-02 and today undetected. Also, the entry-side fix's
+own assumption was wrong: it filled at next-day OPEN, modeled on live
+placing an AMO at market open. Checked `runner/daily_runner.py` directly
+— live runs at ~14:50 IST via a direct MARKET order, no AMO, and
+Upstox's daily-candle API doesn't expose an incomplete "today" bar
+mid-session, so a 14:50 run decides off YESTERDAY's close and fills
+near TODAY's close (~40min before the real 15:30 close). Fixed:
+`backtest/engine.py`'s `_entry_fill_price()` → `_lagged_fill_price()`,
+parameterized by side (buy/sell), next-day CLOSE instead of OPEN,
+applied to both entry and exit call sites (5 total).
+`NEXT_DAY_OPEN_FILL_ENABLED` → `NEXT_DAY_CLOSE_FILL_ENABLED`
+(`config/settings.py`).
+
+**#2 — rank-replacement ranking field mismatch.** Backtest's validated
+eviction logic (§XIX) ranks the weakest held position by `rs_rank`;
+`portfolio/manager.py`'s independently-hand-written copy used
+`composite_rank` — a different field, never reconciled after backtest's
+version was fixed in §XIX. Fixed: live now uses `rs_rank`, matching
+backtest.
+
+**#3 — missing profit gate.** Backtest's eviction condition requires
+`weakest_profit >= MIN_PROFIT_SOFT` (a holding must be at least
+breakeven before being evicted, per §XIX Bug 2's recalibration); live's
+copy never had this check at all — could evict a position at a real
+loss. Fixed: added the same gate to `portfolio/manager.py`.
+
+**#4 — hardcoded vs config-driven thresholds.** Live had
+`REPLACE_MIN_NEW_RS`/`REPLACE_MAX_HELD_RS`/`REPLACE_MIN_GAP` hardcoded
+as local constants inside `process_signals()`; backtest reads them from
+`config/settings.py` (where §XIX's recalibration was applied). Live was
+silently running the pre-§XIX numbers. Fixed: live now imports the same
+constants from `config.settings`.
+
+**#5 (related, found while fixing #2-4) — defensive-symbol exclusion
+gap.** Backtest excludes both `GOLD_ETF` and `LIQUIDBEES` from eviction
+candidacy via `is_defensive_symbol()`; live only excluded
+`SAFE_HAVEN_SYMBOL` (GOLD_ETF) by name — LIQUIDBEES was evictable in
+live but not in backtest. Fixed: live now uses `is_defensive_symbol()`.
+
+**#6 (related, found while fixing #2-4) — risk-guard and ordering gap.**
+Backtest's eviction gate additionally requires `replace_risk_ok`
+(daily-trade-limit + drawdown-breaker, same as §XIX Bug 1's fix) and
+checks `cash > portfolio_val * 0.005` *before* evicting, so a low-cash
+day can't produce a pure eviction with no replacement buy. Live had
+neither guard. Fixed: both added to `portfolio/manager.py`, matching
+backtest's condition ordering exactly.
+
+**#7 — cash-buffer parity.** Live's slot-sizing
+(`spendable = cash * (1 - SIZER_CASH_BUFFER_PCT)`) reserves a buffer so
+transaction charges can't push an order into rejection; backtest's
+equivalent (`base_slot_cash = cash / available_slots`) applied no
+buffer at all — silently sizing positions larger than live ever would.
+Fixed: backtest now applies the same `SIZER_CASH_BUFFER_PCT` buffer
+before dividing by `available_slots`.
+
+**Result — full-window (2022-01-01→2026-07-10)**:
+
+| Metric | Before (old fill model) | After (corrected) |
+|---|---|---|
+| CAGR | +32.28% | +18.09% |
+| Sharpe | 1.72 | 0.94 |
+| MDD | 18.68% | 18.06% |
+| PF | — | 1.66 |
+| Win Rate | — | 42.2% |
+| Trades | ~405 | 410 |
+
+The drop is not new weakness — the old +32.28%/1.72 numbers were
+inflated by the exit-side look-ahead (#1), the single largest lever of
+the seven. +18.09%/0.94 is the honest number under mechanics that
+actually match live.
+
+**Validated via `robustness_gate.py --env NEXT_DAY_CLOSE_FILL=false`**
+(the only one of the 7 fixes that's env-toggleable in isolation — #2-#7
+are unconditional code changes, present in both arms of this
+comparison). baseline = corrected code, candidate = reverting fix #1
+only. Verdict: **REJECT candidate** — reverting is worse everywhere the
+gate checks:
+
+    TEST    baseline Sharpe 0.69/PF 1.58   candidate Sharpe 0.24/PF 1.30
+    FULL    baseline CAGR +18.09%/Sharpe 0.94  candidate +12.23%/0.70
+    candidate is UNSTABLE train→test (baseline is stable)
+    prolonged_sideways_chop: baseline PF 0.68, candidate PF 0.56 (FAIL)
+
+Confirms keep the fix. Note 3 of 4 raw stress-scenario CAGRs (crash_v_
+recovery, extended_bear_grind, gap_down_bleed) came out lower for the
+corrected code than the old zero-lag-exit code — expected, since a less
+optimistic fill model should look worse in exactly the scenarios where
+fill-price optimism matters most — but none crossed the gate's formal
+fail threshold except sideways-chop.
+
+**Not done — explicitly deferred by user.** SuperTrend, ADX, and the
+regime-flip crash-protection exit (§XXV, §XXVI) were proven value-added
+*under the old fill model*. They were not re-isolated individually
+under the corrected model — the `SKIP_*_GATE` diagnostic toggles that
+would allow that were deleted in §XXVII the same day, before this fix
+was known to be needed. Re-isolating would require a git-stash-based
+A/B instead. User chose to commit directly rather than pay for that
+re-isolation (2026-07-10) — this is an open item only if a future
+session specifically needs those three gates re-confirmed, not an
+already-answered question.
+
+Also surfaced, not new: the TEST window (2025-01-01→2026-07-10) already
+fails gates on the corrected code (CAGR +11.02%, Sharpe 0.69) —
+consistent with, not a new instance of, the 2026-07-03
+`baseline_strategy_results` finding that the live-config test-window
+fails gates.
+
+**§XXVIII verdict**: all 7 divergences fixed, commit `df9856f`, pushed
+to `origin/main`. Backtest and live now share identical fill-timing
+mechanics (next-day close, both directions), identical rank-replacement
+logic (field, gates, thresholds, guard ordering), and identical cash-
+buffer sizing. Remaining known gap: SuperTrend/ADX/crash-protection not
+re-validated under this corrected model (see above).

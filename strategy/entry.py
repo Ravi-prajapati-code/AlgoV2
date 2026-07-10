@@ -3,9 +3,8 @@ from config.settings import (
     VOLUME_SPIKE_MULTIPLIER, RS_THRESHOLD,
     TREND_GATE_200_ENABLED, ADX_TREND_THRESHOLD,
     EXTENSION_CAP_PCT, BREAKOUT_PCT, ENTRY_MODE,
+    MIN_DAILY_TURNOVER,
 )
-
-MIN_DAILY_TURNOVER = 20_000_000  # ₹2 Cr/day minimum liquidity
 
 def check_entry(
     ind: Dict,

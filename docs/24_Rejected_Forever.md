@@ -25,6 +25,12 @@ robustness-gate run and re-litigates a closed question.
 | Streak-priority buy ordering (`STREAK_PRIORITY_ENABLED`) | NOT DEPLOYED — ambiguous, not proven | §XXIII, Experiment B. Mechanical PASS but train regresses while test improves — a genuine trade-off, not a clean win. Code deleted 2026-07-10 alongside the sector blacklist (never reached "proven," so didn't meet the bar to keep either). If revisited, this is the one item here that isn't a hard reject — it's an open judgment call that was resolved by *not* shipping it, not by disproving it. |
 | Dynamic replacement (RS/volume/sector rotation triggers for replacing a weak holding) | REJECTED — no live trigger works | [[rotation_logic_synthesis_20260710]]: replacing a weak holding is correct in hindsight, but RS-rank, volume, and sector strength all fail as a real-time trigger. Built, tested, and explained — not an open question. |
 
+## Universe
+
+| Lever | Verdict | Evidence |
+|---|---|---|
+| Tightening the liquidity/turnover floor (`MIN_DAILY_TURNOVER`) above the current dormant ₹2 Cr/day | REJECTED — structural, not a calibration issue | Tested at p25 (₹118 Cr/day) and p10 (₹66.55 Cr/day) of the current universe's turnover distribution via `robustness_gate.py`. Both REJECT on the same failure: `crash_v_recovery` stress CAGR flips negative (+4.66%→-0.85%/-0.95%). Full-window and train-window CAGR/Sharpe drop meaningfully at both levels; test-window is non-monotonic (p25 ~neutral, p10 *worse* despite being milder) — evidence the effect is driven by which specific stock gets filtered (the crash-recovery winner is liquidity-thin), not the threshold level. Two other stress scenarios (extended_bear_grind, gap_down_bleed) were completely inert at both thresholds — the filtered names never mattered there either way. One real positive found: `prolonged_sideways_chop` improves at both levels (PF 0.68→0.84 at p25), a believable "avoid whipsaw in illiquid names" mechanism — but not enough to offset the crash_v_recovery failure under the standard applied all session. 2026-07-10. |
+
 ## What is NOT on this list (proven, keep)
 
 - Relative Strength gate, Trend Alignment (EMA), SuperTrend, ADX

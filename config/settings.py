@@ -125,6 +125,13 @@ REPLACE_MIN_GAP     = float(os.getenv("REPLACE_MIN_GAP", "25.0"))
 MIN_PROFIT_SOFT     = float(os.getenv("MIN_PROFIT_SOFT", "0.25"))
 ENTRY_MODE_SEED = int(os.getenv("ENTRY_MODE_SEED", "42"))
 
+# Minimum daily turnover for entry eligibility (strategy/entry.py). Was a bare
+# module constant; moved here 2026-07-10 to make it robustness_gate.py
+# testable. Default (Rs 2 Cr/day) preserves exact live behavior — confirmed
+# dormant (0/1388 decisions rejected) since it sits far below even the p5
+# turnover (Rs 45.71 Cr/day) of the current ~195-symbol universe.
+MIN_DAILY_TURNOVER = float(os.getenv("MIN_DAILY_TURNOVER", "20000000"))
+
 # Backtest-only realism fix: both entries and exits fill at the NEXT trading
 # day's close, matching live's actual timing. Live's daily-candle data only
 # finalizes at market close, so a run at ~14:50 IST decides using YESTERDAY's
