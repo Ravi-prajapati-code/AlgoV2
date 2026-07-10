@@ -84,14 +84,10 @@ EMA_FAST                = entry_cfg.get('ema_fast', 20)
 EMA_SLOW                = entry_cfg.get('ema_slow', 100)
 EMA_CROSSOVER_LOOKBACK  = entry_cfg.get('ema_crossover_lookback', 5)
 RSI_PERIOD              = entry_cfg.get('rsi_period', 14)
-RSI_BUY_MIN             = entry_cfg.get('rsi_buy_min', 50)
-RSI_BUY_MAX             = entry_cfg.get('rsi_buy_max', 85)
 MACD_FAST               = entry_cfg.get('macd_fast', 12)
 MACD_SLOW               = entry_cfg.get('macd_slow', 26)
 MACD_SIGNAL             = entry_cfg.get('macd_signal', 9)
 VOLUME_SPIKE_MULTIPLIER = entry_cfg.get('volume_spike_multiplier', 1.2)
-MIN_SIGNAL_SCORE        = entry_cfg.get('min_signal_score', 0)
-MIN_VOLUME_RATIO        = entry_cfg.get('min_volume_ratio', 1.5)
 BLOCKED_SECTORS         = set(strat_cfg.get('blocked_sectors', []))
 
 # ──────────────────────────────────────────────
@@ -104,22 +100,30 @@ MARKET_FILTER_ENABLED   = True
 # ──────────────────────────────────────────────
 # STRATEGY — EXIT / RISK
 # ──────────────────────────────────────────────
-exit_cfg = strat_cfg.get('exit', {})
-STOP_LOSS_PCT           = exit_cfg.get('stop_loss_pct', 0.07)
-TAKE_PROFIT_PCT         = exit_cfg.get('take_profit_pct', 0.50)   # Emergency ceiling only — let winners run
-TRAILING_STOP_PCT       = exit_cfg.get('trailing_stop_pct', 0.12) # Wider initial trail (was 0.09)
-TRAIL_TIGHTEN_THRESHOLD = exit_cfg.get('trail_tighten_threshold', 0.15) # Tighten earlier at 15% profit (was 0.20)
-TRAIL_TIGHTEN_PCT       = exit_cfg.get('trail_tighten_pct', 0.06)       # 6% tightened trail (was 0.05)
 ATR_STOP_MULTIPLIER     = per_trade_cfg.get('atr_stop_multiplier', 2.5)
-ATR_TRAIL_MULT_INITIAL  = exit_cfg.get('atr_trail_mult_initial', 2.5)   # ATR × 2.5 for initial trail
-ATR_TRAIL_MULT_TIGHT    = exit_cfg.get('atr_trail_mult_tight', 1.5)     # ATR × 1.5 after tightening
-MAX_HOLD_DAYS           = exit_cfg.get('max_hold_days', 120)
 
 # ──────────────────────────────────────────────
 RS_THRESHOLD         = float(os.getenv("RS_THRESHOLD", "72.0"))  # min composite_rank to qualify for buy
-ADX_TREND_THRESHOLD  = entry_cfg.get('adx_trend_threshold', 20.0)
+ADX_TREND_THRESHOLD  = float(os.getenv("ADX_TREND_THRESHOLD", entry_cfg.get('adx_trend_threshold', 20.0)))
+EXTENSION_CAP_PCT    = float(os.getenv("EXTENSION_CAP_PCT", "0.15"))       # max price extension above EMA50
+BREAKOUT_PCT         = float(os.getenv("BREAKOUT_PCT", "0.05"))            # standard entry: within X of 20d high
 # 200-day EMA trend gate (off by default — live unaffected). Test-only refinement lever.
 TREND_GATE_200_ENABLED = os.getenv("TREND_GATE_200", "false").lower() in ("true", "1", "yes")
+# Entry Attribution Suite (docs/23_Assumption_Audit.md §XIV) — isolates which piece of the
+# entry gate creates edge. FULL = live behavior, unchanged. Test-only, live unaffected.
+ENTRY_MODE      = os.getenv("ENTRY_MODE", "FULL")
+
+# Rank replacement (backtest/engine.py "Execute Buys"): evict the weakest-RS held
+# position for a much stronger waiting candidate when the portfolio is full.
+# docs/23_Assumption_Audit.md §XVIII — fired 0 times in 266 real trades because
+# MIN_PROFIT_SOFT required the weak-RS holding to ALSO be up 25%+ already, which
+# rarely co-occurs with a declining-RS position. Defaults preserve exact live
+# behavior (unchanged) until a candidate override clears robustness_gate.py.
+REPLACE_MIN_NEW_RS  = float(os.getenv("REPLACE_MIN_NEW_RS", "85.0"))
+REPLACE_MAX_HELD_RS = float(os.getenv("REPLACE_MAX_HELD_RS", "55.0"))
+REPLACE_MIN_GAP     = float(os.getenv("REPLACE_MIN_GAP", "25.0"))
+MIN_PROFIT_SOFT     = float(os.getenv("MIN_PROFIT_SOFT", "0.25"))
+ENTRY_MODE_SEED = int(os.getenv("ENTRY_MODE_SEED", "42"))
 
 # Backtest-only realism fix: entries fill at the NEXT trading day's open, matching
 # live's actual timing (signal from yesterday's close, fill at today's 09:17 open).
@@ -146,9 +150,6 @@ REGIME_SMOOTHING_ENABLED = os.getenv("REGIME_SMOOTHING", "true").lower() in ("tr
 # ──────────────────────────────────────────────
 SLIPPAGE_MODEL          = "fixed_pct"  # 'none' | 'fixed_pct' | 'volatility'
 SLIPPAGE_FIXED_PCT      = 0.001        # 0.1 % per side (fixed model)
-SLIPPAGE_ATR_MULT       = 0.10         # ATR × 0.10 → slippage % (volatility model)
-PARTIAL_FILL_ENABLED    = True         # Simulate partial fills for large orders
-PARTIAL_FILL_RATE       = 0.10         # Max 10 % of ADV per order
 
 # ──────────────────────────────────────────────
 # SAFE HAVEN (Phase 2 Add-on)

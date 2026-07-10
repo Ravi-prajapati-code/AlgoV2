@@ -1,4 +1,5 @@
 import logging
+import random
 from datetime import date
 from typing import List, Tuple
 
@@ -6,7 +7,7 @@ from db.models import Signal, Position
 from strategy.entry import check_entry
 from strategy.exit import check_exit_conditions, initial_stops
 from data.universe import get_sector
-from config.settings import IGNORE_SYMBOLS, BLOCKED_SECTORS, SAFE_HAVEN_SYMBOL, SAFE_HAVEN_ENABLED, GOLDBEES_PROFIT_EXIT_ONLY, GOLDBEES_MAX_LOSS_PCT
+from config.settings import IGNORE_SYMBOLS, BLOCKED_SECTORS, SAFE_HAVEN_SYMBOL, SAFE_HAVEN_ENABLED, GOLDBEES_PROFIT_EXIT_ONLY, GOLDBEES_MAX_LOSS_PCT, ENTRY_MODE, ENTRY_MODE_SEED
 from strategy.defensive_portfolio import MIN_GOLDBEES_HOLD_DAYS
 
 logger = logging.getLogger(__name__)
@@ -117,6 +118,28 @@ def generate_signals(
                 ))
         return signals, updated_positions
 
+    # Entry Attribution Suite (docs/23_Assumption_Audit.md §XIV): SHUFFLE_RS tests
+    # whether the RS *value* matters or just which stock it's attached to — permute
+    # rs_rank across today's eligible symbols before gating/ranking, seeded per-day
+    # for reproducibility. All other modes use the real rs_rank.
+    rs_override = {}
+    if ENTRY_MODE == "SHUFFLE_RS":
+        eligible = [s for s in indicators
+                    if s not in held_symbols and s not in IGNORE_SYMBOLS
+                    and not (SAFE_HAVEN_ENABLED and s == SAFE_HAVEN_SYMBOL)
+                    and not (BLOCKED_SECTORS and get_sector(s) in BLOCKED_SECTORS)]
+        rs_values = [indicators[s].get('rs_rank', 0) for s in eligible]
+        rng = random.Random((ENTRY_MODE_SEED, today.toordinal()))
+        rng.shuffle(rs_values)
+        rs_override = dict(zip(eligible, rs_values))
+
+    # NOTE: backtest/engine.py independently re-sorts BUY signals by `.score`
+    # descending before filling slots (and live portfolio/manager.py does the
+    # same) — a local sort/shuffle of `candidates` here has no effect on which
+    # stocks actually get bought. The mode's intended ranking must therefore be
+    # baked into the `rs_rank` value itself, since that becomes `Signal.score`.
+    rank_rng = random.Random((ENTRY_MODE_SEED, today.toordinal()))
+
     candidates = []
     for symbol, ind in indicators.items():
         if symbol in held_symbols or symbol in IGNORE_SYMBOLS:
@@ -126,19 +149,32 @@ def generate_signals(
         if BLOCKED_SECTORS and get_sector(symbol) in BLOCKED_SECTORS:
             continue
 
+        check_ind = ind
+        if symbol in rs_override:
+            check_ind = dict(ind)
+            check_ind['rs_rank'] = rs_override[symbol]
+
         qualified, gate_reason = check_entry(
-            ind, symbol=symbol, regime=regime, 
+            check_ind, symbol=symbol, regime=regime,
             index_confirming=index_confirming
         )
-        
+
         if qualified:
+            if ENTRY_MODE == "REVERSE_RS":
+                score = -check_ind.get('rs_rank', 0)
+            elif ENTRY_MODE in ("RANDOM_ALL", "RANDOM_ELIGIBLE"):
+                score = rank_rng.random()
+            elif ENTRY_MODE == "PURE_ADX_BREAKOUT":
+                score = ind.get('adx', 0)
+            else:  # FULL, PURE_RS, SHUFFLE_RS
+                score = check_ind.get('rs_rank', 0)
             candidates.append({
                 "symbol": symbol,
-                "rs_rank": ind.get('rs_rank', 0),
+                "rs_rank": score,
                 "reason": gate_reason,
                 "indicators": ind
             })
-    
+
     candidates.sort(key=lambda x: x["rs_rank"], reverse=True)
 
     for cand in candidates:

@@ -6,17 +6,15 @@ Optimized for speed while supporting intraday execution times.
 
 import logging
 import os
-from datetime import date, datetime, time as dt_time
+from datetime import date, datetime
 from typing import List, Dict, Optional
 
 import pandas as pd
 import numpy as np
 
-from db.models import Position, Trade, Signal
+from db.models import Position, Trade
 from strategy.entry import check_entry
-from indicators.composite import compute_indicators
-from strategy.relative_strength import compute_rs_for_all
-from strategy.regime import detect_regime, is_buy_allowed, regime_position_factor, regime_min_score, is_index_confirming
+from strategy.regime import detect_regime, is_buy_allowed, is_index_confirming
 from strategy.defensive_portfolio import (
     REGIME_SWITCH_DAYS, BULL_RECOVERY_DAYS, REBAL_DAYS, MIN_DEFENSIVE_HOLD_DAYS,
     BEAR_SWING_RS_THRESHOLD, BEAR_SWING_SLOTS, BEAR_SWING_COOLDOWN_DAYS, ENTRY_CONFIRM_DAYS,
@@ -27,24 +25,24 @@ from strategy.defensive_portfolio import (
 NIFTY_PULLBACK_GUARD_PCT = float(os.getenv("NIFTY_PULLBACK_PCT", "0"))
 # Portfolio-level stop: close ALL positions if portfolio DD from peak >= this (0 = disabled)
 PORTFOLIO_STOP_PCT      = float(os.getenv("PORTFOLIO_STOP_PCT",      "0"))
-from strategy.signals import generate_signals, MIN_DAILY_TURNOVER
-from strategy.exit import initial_stops, update_trailing_stop, check_exit_conditions
-from portfolio.sizer import calculate_shares_for_value, position_value
+from strategy.signals import generate_signals
+from strategy.exit import initial_stops, check_exit_conditions
+from indicators.trend import compute_supertrend
+from portfolio.sizer import calculate_shares_for_value
 from portfolio.allocator import can_open_position, portfolio_invested_value
 from portfolio.risk import can_open_new_trades
-from strategy.scoring import score_to_size_factor
 from charges.calculator import net_pnl, buy_charges
-from backtest.slippage import simulate_partial_fill
 from data.universe import get_sector
 from config.settings import (
     MARKET_INDEX_SYMBOL, INITIAL_CAPITAL,
     SLIPPAGE_FIXED_PCT, SLIPPAGE_MODEL, round_to_tick,
-    MAX_OPEN_POSITIONS, EXECUTION_TIMES, EMA_FAST, EMA_SLOW,
+    MAX_OPEN_POSITIONS, EXECUTION_TIMES,
     RS_THRESHOLD, DRAWDOWN_KILL_SWITCH_PCT, DRAWDOWN_REDUCE_SIZE_PCT, DRAWDOWN_REDUCE_TIER2_MULT,
     MACD_FAST, MACD_SLOW, MACD_SIGNAL, SAFE_HAVEN_SYMBOL,
     MAX_STOCK_ALLOCATION_PCT, MAX_NEW_TRADES_PER_DAY,
-    ATR_TRAIL_MULT_INITIAL, GOLDBEES_PROFIT_EXIT_ONLY, GOLDBEES_MAX_LOSS_PCT,
+    GOLDBEES_PROFIT_EXIT_ONLY, GOLDBEES_MAX_LOSS_PCT,
     NEXT_DAY_OPEN_FILL_ENABLED, REGIME_SMOOTHING_ENABLED,
+    REPLACE_MIN_NEW_RS, REPLACE_MAX_HELD_RS, REPLACE_MIN_GAP, MIN_PROFIT_SOFT,
 )
 
 logger = logging.getLogger(__name__)
@@ -120,6 +118,11 @@ class BacktestEngine:
 
         logger.info(f"Running backtest loop [slippage={self.slippage_model}]…")
 
+        # Consecutive-qualifying-day streak per symbol (docs/23_Assumption_Audit.md
+        # §XXII: forward return decays monotonically from day1 "birth" to day8+
+        # "decay" of a symbol's qualifying streak). Tracked by loop index, not
+        # calendar date, so gaps (holidays/non-trading days) don't break a streak.
+
         for i, today_date in enumerate(all_dates):
             new_trades_today = 0  # reset daily trade counter
 
@@ -147,6 +150,20 @@ class BacktestEngine:
                 # Get precomputed indicators for this specific time
                 indicators = all_indicators.get(today_ts, {})
                 if not indicators: continue
+
+                # Sector-average RS rank across the FULL day's universe (not just
+                # qualifying candidates) — lets a stock's rs_rank be split into
+                # "sector is strong" vs "stock is strong within a weak sector".
+                sector_rs_sum: dict = {}
+                sector_rs_n: dict = {}
+                for _sym, _ind in indicators.items():
+                    _sec = get_sector(_sym)
+                    _rs = _ind.get("rs_rank")
+                    if _sec is None or _rs is None:
+                        continue
+                    sector_rs_sum[_sec] = sector_rs_sum.get(_sec, 0.0) + float(_rs)
+                    sector_rs_n[_sec] = sector_rs_n.get(_sec, 0) + 1
+                sector_rs_avg = {s: sector_rs_sum[s] / sector_rs_n[s] for s in sector_rs_sum}
 
                 # ── 2. Regime & Context ───────────────────────────────────
                 first_sym = next(iter(indicators))
@@ -318,13 +335,6 @@ class BacktestEngine:
 
                 # ── Bear swing mode: active trading during BEAR regime ────────
                 if hybrid_mode == "defensive":
-                    # Update trailing stops for bear-swing positions (gold excluded: it's a
-                    # static-floor hedge exited via GOLDBEES_MAX_LOSS_PCT/regime flip, not ATR trail)
-                    for pos in [p for p in open_positions if p.symbol != GOLD_ETF]:
-                        cp  = prices.get(pos.symbol)
-                        atr = indicators.get(pos.symbol, {}).get("atr", 0)
-                        if cp: update_trailing_stop(pos, cp, atr=atr, regime=regime)
-
                     portfolio_val = cash + portfolio_invested_value(open_positions, prices)
                     peak_value    = max(peak_value, portfolio_val)
 
@@ -432,12 +442,6 @@ class BacktestEngine:
                     })
                     continue
 
-                # ── 3. Update Trailing Stops (gold excluded: static-floor hedge, not ATR trail) ──
-                for pos in [p for p in open_positions if p.symbol != GOLD_ETF]:
-                    cp = prices.get(pos.symbol)
-                    atr = indicators.get(pos.symbol, {}).get("atr", 0)
-                    if cp: update_trailing_stop(pos, cp, atr=atr, regime=regime)
-
                 held = {pos.symbol for pos in open_positions}
                 portfolio_val = cash + portfolio_invested_value(open_positions, prices)
                 peak_value = max(peak_value, portfolio_val)
@@ -543,21 +547,34 @@ class BacktestEngine:
                 )
 
                 # ── Rank replacement: evict weakest if a stronger candidate is waiting ──
-                _REPLACE_MIN_NEW_RS  = 85.0
-                _REPLACE_MAX_HELD_RS = 55.0
-                _REPLACE_MIN_GAP     = 25.0
-                if buy_signals and available_slots == 0 and trades_ok and cash > (portfolio_val * 0.005):
+                # NOTE: replacement is a 1-for-1 swap (net position count unchanged), so it
+                # must NOT be gated on `trades_ok`, which is False whenever the portfolio is
+                # at MAX_OPEN_POSITIONS capacity -- exactly the state this branch only runs
+                # in (`available_slots == 0`). Using `trades_ok` here made this branch
+                # unreachable for any threshold values (docs/23_Assumption_Audit.md §XIX).
+                # Daily-trade-limit and drawdown-breaker checks still legitimately apply.
+                replace_risk_ok = (new_trades_today < MAX_NEW_TRADES_PER_DAY) and (current_dd < DRAWDOWN_KILL_SWITCH_PCT)
+                if buy_signals and available_slots == 0 and replace_risk_ok and cash > (portfolio_val * 0.005):
                     best_cand = buy_signals[0]
                     non_def = [p for p in open_positions if not is_defensive_symbol(p.symbol)]
                     if non_def:
                         weakest = min(non_def, key=lambda p: indicators.get(p.symbol, {}).get("rs_rank", 101))
                         weakest_rs = float(indicators.get(weakest.symbol, {}).get("rs_rank", 101))
                         weakest_profit = ((prices.get(weakest.symbol, weakest.entry_price) / weakest.entry_price) - 1) if weakest.entry_price > 0 else 0.0
-                        _min_profit_soft = float(__import__('os').getenv("MIN_PROFIT_SOFT", "0.25"))
-                        if (best_cand.score >= _REPLACE_MIN_NEW_RS
-                                and weakest_rs <= _REPLACE_MAX_HELD_RS
-                                and (best_cand.score - weakest_rs) >= _REPLACE_MIN_GAP
-                                and weakest_profit >= _min_profit_soft):
+                        if os.getenv("DEBUG_REPLACE"):
+                            result.decision_log.append({
+                                "date": today_ts, "symbol": "__REPLACE_DEBUG__",
+                                "rs_pass": "", "signal": "", "reason": "",
+                                "rank_score": round(best_cand.score, 1),
+                                "rs_rank": round(weakest_rs, 1),
+                                "selected": "", "regime": regime, "market_bullish": market_bullish,
+                                "adx": 0, "extension_pct": 0, "breakout_dist_pct": 0,
+                                "turnover": round(weakest_profit, 4),
+                            })
+                        if (best_cand.score >= REPLACE_MIN_NEW_RS
+                                and weakest_rs <= REPLACE_MAX_HELD_RS
+                                and (best_cand.score - weakest_rs) >= REPLACE_MIN_GAP
+                                and weakest_profit >= MIN_PROFIT_SOFT):
                             ep = round_to_tick(prices.get(weakest.symbol, weakest.entry_price) * (1 - SLIPPAGE_FIXED_PCT))
                             pnl_r = net_pnl(weakest.entry_price, ep, weakest.shares)
                             result.trades.append(Trade(
@@ -572,6 +589,13 @@ class BacktestEngine:
                             cash += ep * weakest.shares - pnl_r["sell_charges"]["total"]
                             open_positions = [p for p in open_positions if p.symbol != weakest.symbol]
                             available_slots = MAX_OPEN_POSITIONS - len(open_positions)
+                            # trades_ok above was computed pre-eviction (portfolio full ->
+                            # capacity check False). Recompute now the slot is free, else
+                            # the buy loop below skips the replacement buy and this becomes
+                            # a pure eviction (worse than doing nothing).
+                            trades_ok, trades_reason = can_open_new_trades(
+                                new_trades_today, open_positions, portfolio_val, peak_value
+                            )
                             logger.info(
                                 f"  [REPLACE] {weakest.symbol} RS={weakest_rs:.0f} → "
                                 f"{best_cand.symbol} RS={best_cand.score:.0f}"
@@ -687,13 +711,27 @@ class BacktestEngine:
                         if was_bought:
                             selected_val = "YES"
                     
+                    close_px = float(ind.get('close', 0) or 0)
+                    ema_50_v = float(ind.get('ema_50', 0) or 0)
+                    high_20d_v = float(ind.get('high_20d', 0) or 0)
+                    _sec = get_sector(symbol)
+                    _sec_avg = sector_rs_avg.get(_sec) if _sec is not None else None
                     result.decision_log.append({
-                        "date": today_ts, "symbol": symbol, 
-                        "rs_pass": rs_pass, "signal": signal, 
+                        "date": today_ts, "symbol": symbol,
+                        "rs_pass": rs_pass, "signal": signal,
                         "reason": gate_reason,
                         "rank_score": round(rs_rank, 1),
                         "rs_rank": round(rs_rank, 1),
-                        "selected": selected_val
+                        "selected": selected_val,
+                        "regime": regime,
+                        "market_bullish": market_bullish,
+                        "adx": round(float(ind.get('adx', 0) or 0), 2),
+                        "extension_pct": round((close_px - ema_50_v) / ema_50_v, 4) if ema_50_v else 0.0,
+                        "breakout_dist_pct": round((close_px - high_20d_v) / high_20d_v, 4) if high_20d_v else 0.0,
+                        "turnover": round(float(ind.get('turnover', 0) or 0), 0),
+                        "vol_ratio": round(float(ind.get('vol_ratio', 0) or 0), 3),
+                        "sector": _sec or "",
+                        "sector_rel_rs": round(rs_rank - _sec_avg, 2) if _sec_avg is not None else "",
                     })
 
                 # ── 8. Log & State Management ─────────────────────────────
@@ -805,6 +843,7 @@ class BacktestEngine:
                 minus_di = 100 * minus_dm.ewm(alpha=1/14, adjust=False).mean() / atr14.replace(0, np.nan)
                 dx       = 100 * (plus_di - minus_di).abs() / (plus_di + minus_di).replace(0, np.nan)
                 adx_s    = dx.ewm(alpha=1/14, adjust=False).mean()
+                st_dir_s = compute_supertrend(df)["direction"]
                 
                 # RSI
                 delta = close.diff()
@@ -851,7 +890,8 @@ class BacktestEngine:
                         "macd_bullish": h > 0,
                         "perf_10d": perf_10d.loc[dt], "high_20d": high_20d.loc[dt],
                         "rs_rank": rs_ranks.loc[dt], "regime": regime_by_time[t].get(dt.date(), "UNKNOWN"),
-                        "adx": round(float(adx_s.loc[dt]) if not pd.isna(adx_s.loc[dt]) else 0.0, 1)
+                        "adx": round(float(adx_s.loc[dt]) if not pd.isna(adx_s.loc[dt]) else 0.0, 1),
+                        "st_direction": int(st_dir_s.loc[dt]) if not pd.isna(st_dir_s.loc[dt]) else -1,
                     }
 
         return all_indicators, idx_confirmed_by_time, nifty_pullback_ok_by_time
