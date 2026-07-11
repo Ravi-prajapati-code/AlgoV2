@@ -109,6 +109,7 @@ EXTENSION_CAP_PCT    = float(os.getenv("EXTENSION_CAP_PCT", "0.15"))       # max
 BREAKOUT_PCT         = float(os.getenv("BREAKOUT_PCT", "0.05"))            # standard entry: within X of 20d high
 # 200-day EMA trend gate (off by default — live unaffected). Test-only refinement lever.
 TREND_GATE_200_ENABLED = os.getenv("TREND_GATE_200", "false").lower() in ("true", "1", "yes")
+DD_THROTTLE_DISABLED_ENABLED = os.getenv("DD_THROTTLE_DISABLED", "false").lower() in ("true", "1", "yes")
 # Entry Attribution Suite (docs/23_Assumption_Audit.md §XIV) — isolates which piece of the
 # entry gate creates edge. FULL = live behavior, unchanged. Test-only, live unaffected.
 ENTRY_MODE      = os.getenv("ENTRY_MODE", "FULL")
