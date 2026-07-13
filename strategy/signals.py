@@ -135,7 +135,7 @@ def generate_signals(
                     and not (SAFE_HAVEN_ENABLED and s == SAFE_HAVEN_SYMBOL)
                     and not (BLOCKED_SECTORS and get_sector(s) in BLOCKED_SECTORS)]
         rs_values = [indicators[s].get('rs_rank', 0) for s in eligible]
-        rng = random.Random((ENTRY_MODE_SEED, today.toordinal()))
+        rng = random.Random(f"{ENTRY_MODE_SEED}:{today.toordinal()}")
         rng.shuffle(rs_values)
         rs_override = dict(zip(eligible, rs_values))
 
@@ -144,7 +144,7 @@ def generate_signals(
     # same) — a local sort/shuffle of `candidates` here has no effect on which
     # stocks actually get bought. The mode's intended ranking must therefore be
     # baked into the `rs_rank` value itself, since that becomes `Signal.score`.
-    rank_rng = random.Random((ENTRY_MODE_SEED, today.toordinal()))
+    rank_rng = random.Random(f"{ENTRY_MODE_SEED}:{today.toordinal()}")
 
     candidates = []
     for symbol, ind in indicators.items():
