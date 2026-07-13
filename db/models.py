@@ -19,6 +19,7 @@ class Position:
     status: str = "OPEN"
     days_below_ema50: int = 0
     atr_at_entry: float = 0.0
+    origin: str = "strategy"  # strategy | manual | imported — informational for reporting/GTT scoping, see docs/30
     id: Optional[int] = None
 
     @property
@@ -82,4 +83,5 @@ class PortfolioSnapshot:
     cumulative_pnl: float = 0.0
     regime: Optional[str] = None
     capital_injected: float = 0.0   # external deposits detected that day — excluded from P&L
+    strategy_value: float = 0.0     # cash + strategy-origin positions only — see docs/30. 0.0 = unset/pre-migration
     id: Optional[int] = None

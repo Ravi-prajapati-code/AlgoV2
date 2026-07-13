@@ -30,12 +30,20 @@ def init_db():
     for migration in [
         "ALTER TABLE positions ADD COLUMN days_below_ema50 INTEGER DEFAULT 0",
         "ALTER TABLE portfolio_snapshots ADD COLUMN capital_injected REAL DEFAULT 0",
+        "ALTER TABLE positions ADD COLUMN origin TEXT DEFAULT 'strategy'",
+        "ALTER TABLE portfolio_snapshots ADD COLUMN strategy_value REAL DEFAULT 0",
     ]:
         try:
             conn.execute(migration)
             conn.commit()
         except Exception:
             pass  # column already exists
+    # Backfill: every snapshot recorded before this migration was 100% strategy-origin
+    # (the origin column didn't exist yet, so nothing could have been "manual") — total_value
+    # and strategy_value are exactly equal for that entire history, not an approximation.
+    conn.execute(
+        "UPDATE portfolio_snapshots SET strategy_value = total_value WHERE strategy_value IS NULL OR strategy_value = 0"
+    )
     conn.commit()
     conn.close()
     print(f"[DB] Initialized: {DB_PATH}")
@@ -111,11 +119,11 @@ def save_position(pos: Position):
     conn = get_connection()
     conn.execute(
         """INSERT OR REPLACE INTO positions
-           (symbol, sector, entry_date, entry_price, shares, stop_loss, take_profit, trailing_stop, peak_price, days_below_ema50, status, atr_at_entry)
-           VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)""",
+           (symbol, sector, entry_date, entry_price, shares, stop_loss, take_profit, trailing_stop, peak_price, days_below_ema50, status, atr_at_entry, origin)
+           VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)""",
         (pos.symbol, pos.sector, pos.entry_date.strftime("%Y-%m-%d"), pos.entry_price, pos.shares,
          pos.stop_loss, pos.take_profit, pos.trailing_stop, pos.peak_price, pos.days_below_ema50, pos.status,
-         pos.atr_at_entry)
+         pos.atr_at_entry, pos.origin)
     )
     conn.commit()
     conn.close()
@@ -135,6 +143,7 @@ def load_positions(status: str = "OPEN") -> List[Position]:
             trailing_stop=r["trailing_stop"], peak_price=r["peak_price"],
             days_below_ema50=r["days_below_ema50"] if "days_below_ema50" in r.keys() else 0,
             atr_at_entry=r["atr_at_entry"] if "atr_at_entry" in r.keys() and r["atr_at_entry"] is not None else 0.0,
+            origin=r["origin"] if "origin" in r.keys() and r["origin"] else "strategy",
             status=r["status"], id=r["id"]
         ))
     return positions
@@ -161,6 +170,7 @@ def get_last_position(symbol: str) -> Optional[Position]:
         stop_loss=row["stop_loss"], take_profit=row["take_profit"],
         trailing_stop=row["trailing_stop"], peak_price=row["peak_price"],
         days_below_ema50=row["days_below_ema50"] if "days_below_ema50" in row.keys() else 0,
+        origin=row["origin"] if "origin" in row.keys() and row["origin"] else "strategy",
         status=row["status"], id=row["id"]
     )
 
@@ -326,10 +336,10 @@ def save_snapshot(s: PortfolioSnapshot):
     conn = get_connection()
     conn.execute(
         """INSERT OR REPLACE INTO portfolio_snapshots
-           (date, cash, invested, total_value, open_positions, daily_pnl, cumulative_pnl, regime, capital_injected)
-           VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)""",
+           (date, cash, invested, total_value, open_positions, daily_pnl, cumulative_pnl, regime, capital_injected, strategy_value)
+           VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)""",
         (s.date.strftime("%Y-%m-%d"), s.cash, s.invested, s.total_value, s.open_positions,
-         s.daily_pnl, s.cumulative_pnl, s.regime, s.capital_injected)
+         s.daily_pnl, s.cumulative_pnl, s.regime, s.capital_injected, s.strategy_value)
     )
     conn.commit()
     conn.close()
@@ -347,6 +357,7 @@ def load_snapshots(limit: int = 500) -> List[PortfolioSnapshot]:
             open_positions=r["open_positions"], daily_pnl=r["daily_pnl"], cumulative_pnl=r["cumulative_pnl"],
             regime=r["regime"] if "regime" in r.keys() else None,
             capital_injected=r["capital_injected"] if "capital_injected" in r.keys() else 0.0,
+            strategy_value=r["strategy_value"] if "strategy_value" in r.keys() and r["strategy_value"] else r["total_value"],
             id=r["id"]
         ))
     return snaps

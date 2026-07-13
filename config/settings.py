@@ -89,6 +89,10 @@ MACD_SLOW               = entry_cfg.get('macd_slow', 26)
 MACD_SIGNAL             = entry_cfg.get('macd_signal', 9)
 VOLUME_SPIKE_MULTIPLIER = entry_cfg.get('volume_spike_multiplier', 1.2)
 BLOCKED_SECTORS         = set(strat_cfg.get('blocked_sectors', []))
+BLOCKED_SYMBOLS         = set(strat_cfg.get('blocked_symbols', []))
+                              # permanent do-not-trade list — proven-negative symbols
+                              # (docs/24_Rejected_Forever.md), not broker-position/manual-
+                              # holdings handling. See docs/30.
 
 # ──────────────────────────────────────────────
 # MARKET REGIME FILTER
@@ -249,4 +253,6 @@ def round_to_tick(price: float, tick: float = 0.05) -> float:
 # ──────────────────────────────────────────────
 # IGNORE MANUAL HOLDINGS
 # ──────────────────────────────────────────────
-IGNORE_SYMBOLS = ["LT.NS", "HCLTECH.NS", "IRFC.NS", "CAMS.NS"]  # CAMS: 3 trades 0% WR structural loser
+IGNORE_SYMBOLS = ["LT.NS", "HCLTECH.NS", "IRFC.NS"]  # manual/legacy holdings, not strategy do-not-trade
+                              # (CAMS.NS moved to BLOCKED_SYMBOLS — was a proven-negative trading
+                              # verdict, not a manual holding; see docs/30)
