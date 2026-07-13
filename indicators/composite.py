@@ -70,17 +70,41 @@ def compute_indicators(df: pd.DataFrame, symbol: str = "", rs_metrics: Optional[
     trend = compute_trend(df)
     
     last_ema_20 = trend["ema_fast"]
-    last_ema_50 = trend["ema_slow"]
+    last_ema_slow_legacy = trend["ema_slow"]  # EMA(EMA_SLOW), default 100 — for ML legacy keys only
     supertrend = trend["supertrend"]
     st_direction = trend["st_direction"]
-    
+
+    # ema_50 must be an independent EMA(50), matching backtest/engine.py's
+    # `close.ewm(span=50)`. Previously this key held trend["ema_slow"]
+    # (EMA(EMA_SLOW), default 100) — same period as ema_100, just rounded
+    # differently, so the entry gate's "ema_50 > ema_100" trend-alignment
+    # check was comparing a value to its own rounding noise, not two real
+    # timeframes. docs/31_EMA50_Mislabel_Fix.md.
+    ema_50  = close.ewm(span=50,  adjust=False, min_periods=1).mean()
     ema_100 = close.ewm(span=100, adjust=False, min_periods=1).mean()
     ema_150 = close.ewm(span=150, adjust=False, min_periods=1).mean()
     ema_200 = close.ewm(span=200, adjust=False, min_periods=1).mean()
+    last_ema_50  = ema_50.iloc[-1]
     last_ema_100 = ema_100.iloc[-1]
     last_ema_150 = ema_150.iloc[-1]
     last_ema_200 = ema_200.iloc[-1]
-    
+
+    # Sweepable entry/exit EMA periods (docs/31) — reuse the fixed series above
+    # when the configured period matches one already computed, to avoid a
+    # duplicate ewm() call for the (common) case of running at defaults.
+    from config.settings import ENTRY_EMA_MEDIUM, ENTRY_EMA_LONG, EXIT_TREND_EMA
+    _period_series = {20: last_ema_20, 50: ema_50, 100: ema_100, 150: ema_150, 200: ema_200}
+
+    def _ema_at(period: int):
+        cached = _period_series.get(period)
+        if cached is not None:
+            return cached.iloc[-1] if hasattr(cached, "iloc") else cached
+        return close.ewm(span=period, adjust=False, min_periods=1).mean().iloc[-1]
+
+    last_ema_entry_med  = _ema_at(ENTRY_EMA_MEDIUM)
+    last_ema_entry_long = _ema_at(ENTRY_EMA_LONG)
+    last_ema_exit_trend = _ema_at(EXIT_TREND_EMA)
+
     # 2. Volatility (ATR & Bollinger Bands) — Wilder's EMA ATR, matches TradingView
     high_low = df['high'] - df['low']
     high_close = np.abs(df['high'] - df['close'].shift())
@@ -157,7 +181,7 @@ def compute_indicators(df: pd.DataFrame, symbol: str = "", rs_metrics: Optional[
         "high":       df['high'].iloc[-1],
         "low":        df['low'].iloc[-1],
         "ema_fast":   last_ema_20,  # Legacy name for ML
-        "ema_slow":   last_ema_50,  # Legacy name for ML
+        "ema_slow":   last_ema_slow_legacy,  # Legacy name for ML — preserves pre-fix EMA(EMA_SLOW) semantics, unrelated to the ema_50 fix below
         "ema_20":     last_ema_20,
         "ema_50":     last_ema_50,
         "supertrend": supertrend,
@@ -165,6 +189,9 @@ def compute_indicators(df: pd.DataFrame, symbol: str = "", rs_metrics: Optional[
         "ema_100":    last_ema_100,
         "ema_150":    last_ema_150,
         "ema_200":    last_ema_200,
+        "ema_entry_med":   last_ema_entry_med,
+        "ema_entry_long":  last_ema_entry_long,
+        "ema_exit_trend":  last_ema_exit_trend,
         "atr":        atr,
         "atr_pct":    (atr / last_price * 100) if last_price > 0 else 0,
         "rsi":        round(rsi, 2),

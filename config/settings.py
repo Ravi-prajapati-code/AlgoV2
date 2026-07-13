@@ -113,6 +113,13 @@ EXTENSION_CAP_PCT    = float(os.getenv("EXTENSION_CAP_PCT", "0.15"))       # max
 BREAKOUT_PCT         = float(os.getenv("BREAKOUT_PCT", "0.05"))            # standard entry: within X of 20d high
 # 200-day EMA trend gate (off by default — live unaffected). Test-only refinement lever.
 TREND_GATE_200_ENABLED = os.getenv("TREND_GATE_200", "false").lower() in ("true", "1", "yes")
+# Entry trend-alignment gate periods (strategy/entry.py: close > EMA_MED and EMA_MED > EMA_LONG).
+# Sweepable for docs/31 follow-up EMA-period test — defaults match the corrected ema_50/ema_100.
+ENTRY_EMA_MEDIUM     = int(os.getenv("ENTRY_EMA_MEDIUM", "50"))
+ENTRY_EMA_LONG       = int(os.getenv("ENTRY_EMA_LONG", "100"))
+# TREND_BREAK exit period + consecutive-day confirmation (strategy/signals.py).
+EXIT_TREND_EMA       = int(os.getenv("EXIT_TREND_EMA", "50"))
+EXIT_TREND_CONFIRM_DAYS = int(os.getenv("EXIT_TREND_CONFIRM_DAYS", "2"))
 DD_THROTTLE_DISABLED_ENABLED = os.getenv("DD_THROTTLE_DISABLED", "false").lower() in ("true", "1", "yes")
 # Entry Attribution Suite (docs/23_Assumption_Audit.md §XIV) — isolates which piece of the
 # entry gate creates edge. FULL = live behavior, unchanged. Test-only, live unaffected.

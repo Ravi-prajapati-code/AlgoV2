@@ -83,6 +83,9 @@ def generate_signals(
         current_price = ind['close']
         rs_rank = ind.get('rs_rank', 0)
         ema_50 = ind.get('ema_50', 0)
+        # TREND_BREAK basis is separately configurable (docs/31 sweep) — falls
+        # back to ema_50 if the generic key is absent, same pattern as entry.py.
+        ema_exit_trend = ind.get('ema_exit_trend', ema_50) or ema_50
         atr = ind.get('atr', 0)
 
         exit_triggered, exit_reason = check_exit_conditions(pos, current_price, rs_rank, indicators=ind)
@@ -91,11 +94,11 @@ def generate_signals(
             if regime == "BEAR":
                 exit_triggered = True
                 exit_reason = "MARKET_CRASH_PROTECTION (Index < 100 EMA)"
-            elif current_price < ema_50:
+            elif current_price < ema_exit_trend:
                 pos.days_below_ema50 += 1
-                if pos.days_below_ema50 >= 2:
+                if pos.days_below_ema50 >= EXIT_TREND_CONFIRM_DAYS:
                     exit_triggered = True
-                    exit_reason = "TREND_BREAK (Price < 50 EMA x2 days)"
+                    exit_reason = f"TREND_BREAK (Price < {EXIT_TREND_EMA} EMA x{EXIT_TREND_CONFIRM_DAYS} days)"
             else:
                 pos.days_below_ema50 = 0
 
