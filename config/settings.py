@@ -122,15 +122,6 @@ SECTOR_DURABILITY_WEIGHT        = float(os.getenv("SECTOR_DURABILITY_WEIGHT", "0
 SECTOR_DURABILITY_LOOKBACK_DAYS = int(os.getenv("SECTOR_DURABILITY_LOOKBACK_DAYS", "180"))
 SECTOR_DURABILITY_MIN_TRADES    = int(os.getenv("SECTOR_DURABILITY_MIN_TRADES", "5"))
 
-# Regime-gated streak-position preference (docs/25 SS5 / docs/24 Rejected Forever) —
-# previously rejected unconditionally (crash_v_recovery CAGR flip +4.66%->-4.32%,
-# see streak_position_pref_retest_20260710) because it applied even during
-# crash-recovery. This variant only activates once BULL regime has held for
-# ENTRY_CONFIRM_DAYS (same "settled, not just-flipped" bar used elsewhere) --
-# off during BEAR and freshly-flipped-BULL, i.e. off during the exact window
-# that killed it before. Off by default.
-STREAK_POSITION_PREF_ENABLED = os.getenv("STREAK_POSITION_PREF_ENABLED", "false").lower() in ("true", "1", "yes")
-
 # Rank replacement (backtest/engine.py "Execute Buys"): evict the weakest-RS held
 # position for a much stronger waiting candidate when the portfolio is full.
 # docs/23_Assumption_Audit.md §XVIII — fired 0 times in 266 real trades because
