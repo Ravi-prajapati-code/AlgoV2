@@ -1,6 +1,8 @@
 strategy:
   blocked_sectors:
   - Construction Materials
+  blocked_symbols:
+  - CAMS.NS  # 3 trades 0% WR structural loser — docs/24_Rejected_Forever.md
   description: Hybrid momentum/defensive swing trading — NSE
   entry:
     adx_trend_threshold: 20.0

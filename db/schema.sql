@@ -32,7 +32,8 @@ CREATE TABLE IF NOT EXISTS positions (
     ml_confidence   REAL,
     regime          TEXT,
     risk_score      REAL,
-    sizing_method   TEXT
+    sizing_method   TEXT,
+    origin          TEXT    NOT NULL DEFAULT 'strategy'  -- strategy | manual | imported
 );
 
 -- ── CLOSED TRADES ─────────────────────────────────────────────────────────
@@ -86,7 +87,8 @@ CREATE TABLE IF NOT EXISTS portfolio_snapshots (
     -- New: risk state
     drawdown_pct    REAL    DEFAULT 0,
     regime          TEXT,
-    kill_switch     INTEGER DEFAULT 0   -- 0=off, 1=on
+    kill_switch     INTEGER DEFAULT 0,  -- 0=off, 1=on
+    strategy_value  REAL    DEFAULT 0   -- cash + strategy-origin positions only, see docs/30
 );
 
 -- ── RISK EVENTS ───────────────────────────────────────────────────────────

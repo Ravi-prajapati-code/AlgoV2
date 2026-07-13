@@ -137,6 +137,10 @@ class PortfolioManager:
                 # Also reset peak_value to avoid false drawdown triggers on first run.
                 snapshots = repo.load_snapshots(limit=1)
                 if not snapshots and live_pv > 0:
+                    # One-time bootstrap only (no snapshot history to derive a strategy-only
+                    # baseline from yet) — uses broker-wide value same as before. Fine in
+                    # practice since this path only fires once, before any non-strategy
+                    # position could exist. See docs/30 §4.
                     logger.info(f"[Live] Baseline established from Upstox: ₹{live_pv:,.2f}")
                     self.initial_capital = live_pv
                     self.peak_value = live_pv
@@ -165,7 +169,13 @@ class PortfolioManager:
         if snapshots:
             # Only update peak_value if it's higher than what we have
             # In live mode, if snapshots were empty, peak_value was set to live_pv above
-            self.peak_value = max(getattr(self, 'peak_value', 0), max(s.total_value for s in snapshots))
+            # peak_value feeds the drawdown-throttle comparison against strategy_value()
+            # (via portfolio_value()'s alias) — must be sourced from the same strategy-only
+            # basis, not account-wide total_value, or drawdown reads wrong once manual
+            # positions exist. docs/30. strategy_value falls back to total_value for any
+            # pre-migration snapshot row (repository.py load_snapshots), so this is exact
+            # for existing history and correct going forward.
+            self.peak_value = max(getattr(self, 'peak_value', 0), max(s.strategy_value for s in snapshots))
         elif not hasattr(self, 'peak_value'):
             self.peak_value = self.initial_capital
         self.new_trades_today = 0
@@ -201,17 +211,34 @@ class PortfolioManager:
             logger.warning(f"  [Live] Timeout waiting for order {order_id}. Current status: {res.status}")
         return res
 
-    def portfolio_value(self, prices: dict) -> float:
-        """Total Account Value = Cash + Portfolio Value."""
+    def account_value(self, prices: dict) -> float:
+        """Total broker account value — every position (any origin) + cash.
+        Reporting/net-worth only, never a sizing or risk denominator — see
+        strategy_value(). docs/30."""
         if self.broker:
             try:
                 live_val = self.broker.get_portfolio_value()
                 if live_val > 0: return live_val
             except:
                 pass
-                
+
         open_position_value = portfolio_invested_value(self.open_positions, prices)
         return self.cash + open_position_value
+
+    def strategy_value(self, prices: dict) -> float:
+        """Cash + strategy-origin positions only. The authoritative denominator
+        for position sizing, MAX_STOCK_ALLOCATION_PCT, drawdown-throttle, and
+        performance reporting — isolates strategy skill from manual/imported
+        broker holdings that the strategy doesn't control. docs/30."""
+        strategy_positions = [p for p in self.open_positions if p.origin == "strategy"]
+        return self.cash + portfolio_invested_value(strategy_positions, prices)
+
+    def portfolio_value(self, prices: dict) -> float:
+        """Deprecated alias for strategy_value() — kept so any call site not yet
+        migrated gets the conservative (strategy-only) basis rather than the
+        broker-wide total. Prefer strategy_value()/account_value() explicitly.
+        docs/30."""
+        return self.strategy_value(prices)
 
     def process_signals(self, today: date, signals: List[Signal], prices: dict, indicators: dict = None, regime: str = None, fund_injection: float = 0.0):
         """Process today's signals: Exits first, then dynamic batch entries."""
@@ -718,7 +745,10 @@ class PortfolioManager:
                 injection_today, self.cash,
             )
 
-        pv_after = self.portfolio_value(prices)
+        # total_value/day_pnl/cum_pnl below stay account-wide for continuity with existing
+        # history; strategy_value is the new, separate strategy-attributable column. docs/30.
+        pv_after = self.account_value(prices)
+        pv_strategy_after = self.strategy_value(prices)
         invested_cost = sum(p.entry_price * p.shares for p in self.open_positions)
         market_val = portfolio_invested_value(self.open_positions, prices)
 
@@ -743,6 +773,7 @@ class PortfolioManager:
             total_value=pv_after, open_positions=len(self.open_positions),
             daily_pnl=day_pnl, cumulative_pnl=cum_pnl, regime=regime,
             capital_injected=injection_today,
+            strategy_value=pv_strategy_after,
         )
         repo.save_snapshot(snap)
         

@@ -26,7 +26,7 @@ logging.basicConfig(
 logger = logging.getLogger("reconciler")
 
 import requests
-from config.settings import TELEGRAM_BOT_TOKEN, TELEGRAM_CHAT_ID, IGNORE_SYMBOLS
+from config.settings import TELEGRAM_BOT_TOKEN, TELEGRAM_CHAT_ID
 
 
 def _send(msg: str):
@@ -71,8 +71,7 @@ def get_broker_symbols() -> set | None:
             qty = int(pos.get("quantity", 0))
             if qty > 0:
                 sym = pos.get("tradingsymbol", "") + ".NS"
-                if sym not in IGNORE_SYMBOLS:
-                    symbols.add(sym)
+                symbols.add(sym)
     except Exception as e:
         logger.warning("Holdings fetch failed: %s", e)
 
@@ -85,8 +84,7 @@ def get_broker_symbols() -> set | None:
             qty = int(pos.get("quantity", 0))
             if qty > 0 and pos.get("product") == "CNC":
                 sym = pos.get("tradingsymbol", "") + ".NS"
-                if sym not in IGNORE_SYMBOLS:
-                    symbols.add(sym)
+                symbols.add(sym)
     except Exception as e:
         logger.warning("Short-term positions fetch failed: %s", e)
 

@@ -32,10 +32,14 @@ logger = logging.getLogger("GTTCoverage")
 
 
 def _excluded_symbols() -> set:
-    """Symbols that intentionally carry no GTT stop (cash-park ETFs, ignored names)."""
+    """Symbols that intentionally carry no GTT stop: cash-park ETFs, legacy
+    IGNORE_SYMBOLS entries, and any manual/imported-origin DB position — the
+    strategy must never touch a stop the user placed themselves. docs/30."""
     from config.settings import IGNORE_SYMBOLS
     from strategy.defensive_portfolio import ALL_DEFENSIVE_SYMBOLS
-    return set(IGNORE_SYMBOLS) | set(ALL_DEFENSIVE_SYMBOLS)
+    from db.repository import load_positions
+    manual_symbols = {p.symbol for p in load_positions(status="OPEN") if p.origin != "strategy"}
+    return set(IGNORE_SYMBOLS) | set(ALL_DEFENSIVE_SYMBOLS) | manual_symbols
 
 
 def check() -> int:

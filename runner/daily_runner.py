@@ -40,7 +40,7 @@ from portfolio.sizer import calculate_shares_for_value
 from charges.calculator import buy_charges, net_pnl
 from config.settings import round_to_tick
 from runner.signal_output import write_signals, write_portfolio_state
-from config.settings import INITIAL_CAPITAL, MARKET_INDEX_SYMBOL, IGNORE_SYMBOLS, MAX_STOCK_ALLOCATION_PCT, GOLDBEES_PROFIT_EXIT_ONLY, GOLDBEES_MAX_LOSS_PCT
+from config.settings import INITIAL_CAPITAL, MARKET_INDEX_SYMBOL, MAX_STOCK_ALLOCATION_PCT, GOLDBEES_PROFIT_EXIT_ONLY, GOLDBEES_MAX_LOSS_PCT
 from db.models import Position, Signal, Trade
 
 logging.basicConfig(
@@ -206,7 +206,9 @@ def sync_portfolio_with_broker(broker, today: date):
         from portfolio.manager import cancel_stale_gtts
 
         raw_live_positions = broker.get_positions()
-        live_positions = [p for p in raw_live_positions if p.symbol not in IGNORE_SYMBOLS]
+        # Every broker position is tracked now, regardless of IGNORE_SYMBOLS — origin
+        # classification below (strategy vs manual) replaces symbol-list filtering. docs/30.
+        live_positions = list(raw_live_positions)
         db_positions = {p.symbol: p for p in load_positions(status="OPEN")}
 
         if not live_positions and db_positions:
@@ -270,13 +272,16 @@ def sync_portfolio_with_broker(broker, today: date):
                 recovered_price = (prev.entry_price
                                    if (prev and prev.entry_price > 0)
                                    else broker_price)
+                # No prior DB record at all (any status) means the strategy never opened
+                # this position — it's a manual/imported broker holding. docs/30.
+                origin = "strategy" if prev else "manual"
                 if prev:
                     logger.info(
                         f"[Sync] Re-adding {lp.symbol} — recovering entry_date={recovered_date} "
                         f"entry_price=₹{recovered_price:.2f} from previous record."
                     )
                 else:
-                    logger.info(f"[Sync] New position in Broker: {lp.symbol}. Adding to DB.")
+                    logger.info(f"[Sync] New {origin} position in Broker: {lp.symbol}. Adding to DB.")
                 stops = initial_stops(recovered_price)
                 new_pos = Position(
                     symbol=lp.symbol,
@@ -287,7 +292,8 @@ def sync_portfolio_with_broker(broker, today: date):
                     stop_loss=stops["stop_loss"],
                     take_profit=stops["take_profit"],
                     trailing_stop=stops["trailing_stop"],
-                    peak_price=max(recovered_price, lp.ltp)
+                    peak_price=max(recovered_price, lp.ltp),
+                    origin=origin,
                 )
                 save_position(new_pos)
 
@@ -299,8 +305,12 @@ def sync_portfolio_with_broker(broker, today: date):
                     db_pos.shares = lp.quantity
                     save_position(db_pos)
 
-        # 3. Remove legacy stop-loss GTTs — exits are signal-only
+        # 3. Remove legacy stop-loss GTTs — exits are signal-only.
+        # Never touch a non-strategy position's GTTs — those are the user's own broker-side
+        # protection on a manual/imported holding, not something this system manages. docs/30.
         for pos in load_positions(status="OPEN"):
+            if pos.origin != "strategy":
+                continue
             cancel_stale_gtts(broker, pos.symbol, "signal-only mode — legacy stop GTT cleanup")
 
     except Exception as e:

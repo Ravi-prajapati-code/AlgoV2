@@ -7,7 +7,7 @@ from db.models import Signal, Position
 from strategy.entry import check_entry
 from strategy.exit import check_exit_conditions, initial_stops
 from data.universe import get_sector
-from config.settings import IGNORE_SYMBOLS, BLOCKED_SECTORS, SAFE_HAVEN_SYMBOL, SAFE_HAVEN_ENABLED, GOLDBEES_PROFIT_EXIT_ONLY, GOLDBEES_MAX_LOSS_PCT, ENTRY_MODE, ENTRY_MODE_SEED, SECTOR_DURABILITY_WEIGHT
+from config.settings import IGNORE_SYMBOLS, BLOCKED_SECTORS, BLOCKED_SYMBOLS, SAFE_HAVEN_SYMBOL, SAFE_HAVEN_ENABLED, GOLDBEES_PROFIT_EXIT_ONLY, GOLDBEES_MAX_LOSS_PCT, ENTRY_MODE, ENTRY_MODE_SEED, SECTOR_DURABILITY_WEIGHT, EXIT_TREND_EMA, EXIT_TREND_CONFIRM_DAYS
 from strategy.defensive_portfolio import MIN_GOLDBEES_HOLD_DAYS
 
 logger = logging.getLogger(__name__)
@@ -33,7 +33,13 @@ def generate_signals(
 
     # 1. EVALUATE EXITS
     for pos in open_positions:
-        if pos.symbol in IGNORE_SYMBOLS:
+        # Non-strategy positions (manual/imported broker holdings) are never exit-evaluated
+        # or force-sold by strategy signals — but still reported as open. docs/30. Previously
+        # this checked IGNORE_SYMBOLS and dropped the position with no append (a latent bug
+        # masked by the fact this branch was unreachable before origin tracking existed —
+        # ignored symbols never made it into open_positions in the first place).
+        if pos.origin != "strategy":
+            updated_positions.append(pos)
             continue
         
         # Safe Haven Exit: Sell if market returns to BULL AND held long enough
@@ -126,7 +132,7 @@ def generate_signals(
     rs_override = {}
     if ENTRY_MODE == "SHUFFLE_RS":
         eligible = [s for s in indicators
-                    if s not in held_symbols and s not in IGNORE_SYMBOLS
+                    if s not in held_symbols and s not in IGNORE_SYMBOLS and s not in BLOCKED_SYMBOLS
                     and not (SAFE_HAVEN_ENABLED and s == SAFE_HAVEN_SYMBOL)
                     and not (BLOCKED_SECTORS and get_sector(s) in BLOCKED_SECTORS)]
         rs_values = [indicators[s].get('rs_rank', 0) for s in eligible]
@@ -143,7 +149,7 @@ def generate_signals(
 
     candidates = []
     for symbol, ind in indicators.items():
-        if symbol in held_symbols or symbol in IGNORE_SYMBOLS:
+        if symbol in held_symbols or symbol in IGNORE_SYMBOLS or symbol in BLOCKED_SYMBOLS:
             continue
         if SAFE_HAVEN_ENABLED and symbol == SAFE_HAVEN_SYMBOL:
             continue
