@@ -64,16 +64,20 @@ LIQUIDBEES_TARGET_WEIGHT = 0.45
 ALL_DEFENSIVE_SYMBOLS = [GOLD_ETF, LIQUIDBEES]
 
 
-def build_target_weights() -> dict:
+def build_target_weights(gold_trend_ok: bool = True) -> dict:
     """Return {symbol: target_weight} for the defensive portfolio.
     50% gold, 45% LIQUIDBEES (liquid cash park), 5% cash buffer.
     SAFE_HAVEN_ENABLED=false → empty dict (pure bear swing, no GOLDBEES).
     LIQUIDBEES_ENABLED=0 falls back to original 50% gold + 50% cash.
+    gold_trend_ok=False (with GOLDBEES_TREND_FILTER_ENABLED) drops the gold
+    leg entirely — stays in cash rather than buying gold that isn't trending up.
     """
-    from config.settings import SAFE_HAVEN_ENABLED
+    from config.settings import SAFE_HAVEN_ENABLED, GOLDBEES_TREND_FILTER_ENABLED
     if not SAFE_HAVEN_ENABLED:
         return {}
-    weights = {GOLD_ETF: 0.50}
+    weights = {}
+    if gold_trend_ok or not GOLDBEES_TREND_FILTER_ENABLED:
+        weights[GOLD_ETF] = 0.50
     if LIQUIDBEES_ENABLED:
         weights[LIQUIDBEES] = LIQUIDBEES_TARGET_WEIGHT
     return weights
@@ -97,7 +101,8 @@ def is_score_declining(symbol: str, score_history: dict, min_days: int) -> bool:
     return all(recent[i] > recent[i + 1] for i in range(len(recent) - 1))
 
 
-def get_defensive_entries(portfolio_val: float, prices: dict, slippage_pct: float = 0.001) -> list:
+def get_defensive_entries(portfolio_val: float, prices: dict, slippage_pct: float = 0.001,
+                           gold_trend_ok: bool = True) -> list:
     """
     Build Position objects for the defensive allocation.
     Returns list of (symbol, shares, exec_price, weight).
@@ -105,7 +110,7 @@ def get_defensive_entries(portfolio_val: float, prices: dict, slippage_pct: floa
     from config.settings import round_to_tick
     from charges.calculator import buy_charges
 
-    weights = build_target_weights()
+    weights = build_target_weights(gold_trend_ok)
     entries = []
     for sym, weight in weights.items():
         price = prices.get(sym)
