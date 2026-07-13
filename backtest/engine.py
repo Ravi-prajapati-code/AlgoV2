@@ -43,7 +43,7 @@ from config.settings import (
     RS_THRESHOLD, DRAWDOWN_KILL_SWITCH_PCT, DRAWDOWN_REDUCE_SIZE_PCT, DRAWDOWN_REDUCE_TIER2_MULT,
     MACD_FAST, MACD_SLOW, MACD_SIGNAL, SAFE_HAVEN_SYMBOL,
     MAX_STOCK_ALLOCATION_PCT, MAX_NEW_TRADES_PER_DAY, SIZER_CASH_BUFFER_PCT,
-    GOLDBEES_PROFIT_EXIT_ONLY, GOLDBEES_MAX_LOSS_PCT, GOLDBEES_TREND_FILTER_ENABLED,
+    GOLDBEES_PROFIT_EXIT_ONLY, GOLDBEES_MAX_LOSS_PCT,
     NEXT_DAY_CLOSE_FILL_ENABLED, REGIME_SMOOTHING_ENABLED,
     REPLACE_MIN_NEW_RS, REPLACE_MAX_HELD_RS, REPLACE_MIN_GAP, MIN_PROFIT_SOFT,
     DD_THROTTLE_DISABLED_ENABLED,
@@ -261,12 +261,7 @@ class BacktestEngine:
                     open_positions = [p for p in open_positions if is_defensive_symbol(p.symbol)]
                     # Target 50% of total portfolio in GOLDBEES; top-up if already held
                     portfolio_val_now = cash + portfolio_invested_value(open_positions, prices)
-                    gold_ind = indicators.get(GOLD_ETF, {})
-                    gold_trend_ok = (not GOLDBEES_TREND_FILTER_ENABLED) or (
-                        gold_ind.get("close", 0) > gold_ind.get("ema_100", 0)
-                    )
-                    entries = get_defensive_entries(portfolio_val_now, prices, SLIPPAGE_FIXED_PCT,
-                                                     gold_trend_ok=gold_trend_ok)
+                    entries = get_defensive_entries(portfolio_val_now, prices, SLIPPAGE_FIXED_PCT)
                     for sym, shares_target, ep, weight in entries:
                         existing_pos = next((p for p in open_positions if p.symbol == sym), None)
                         if existing_pos:

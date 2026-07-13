@@ -40,7 +40,7 @@ from portfolio.sizer import calculate_shares_for_value
 from charges.calculator import buy_charges, net_pnl
 from config.settings import round_to_tick
 from runner.signal_output import write_signals, write_portfolio_state
-from config.settings import INITIAL_CAPITAL, MARKET_INDEX_SYMBOL, IGNORE_SYMBOLS, MAX_STOCK_ALLOCATION_PCT, GOLDBEES_PROFIT_EXIT_ONLY, GOLDBEES_MAX_LOSS_PCT, GOLDBEES_TREND_FILTER_ENABLED
+from config.settings import INITIAL_CAPITAL, MARKET_INDEX_SYMBOL, IGNORE_SYMBOLS, MAX_STOCK_ALLOCATION_PCT, GOLDBEES_PROFIT_EXIT_ONLY, GOLDBEES_MAX_LOSS_PCT
 from db.models import Position, Signal, Trade
 
 logging.basicConfig(
@@ -125,8 +125,7 @@ def _defensive_days_held(open_positions: list, today: date) -> int:
 
 
 def _build_defensive_signals(today: date, prices: dict, open_positions: list,
-                              portfolio_val: float, action: str,
-                              gold_trend_ok: bool = True) -> list:
+                              portfolio_val: float, action: str) -> list:
     """
     Generate synthetic Signal objects for defensive entries/exits.
     action = "enter_defensive" | "exit_defensive"
@@ -143,7 +142,7 @@ def _build_defensive_signals(today: date, prices: dict, open_positions: list,
                 ))
     elif action == "enter_defensive":
         held = {p.symbol for p in open_positions}
-        entries = get_defensive_entries(portfolio_val, prices, gold_trend_ok=gold_trend_ok)
+        entries = get_defensive_entries(portfolio_val, prices)
         for sym, shares, ep, _ in entries:
             if sym not in held:
                 signals.append(Signal(
@@ -524,12 +523,7 @@ def run(today: date = None, live_mode: bool = False, fund_injection: float = 0.0
             reason="bear_regime_exit", indicators={"sector": p.sector},
         ) for p in open_positions if not is_defensive_symbol(p.symbol)]
         # Enter defensive basket
-        gold_ind = indicators.get(GOLD_ETF, {})
-        gold_trend_ok = (not GOLDBEES_TREND_FILTER_ENABLED) or (
-            gold_ind.get("close", 0) > gold_ind.get("ema_100", 0)
-        )
-        entry_signals = _build_defensive_signals(today, prices, open_positions, pv, "enter_defensive",
-                                                   gold_trend_ok=gold_trend_ok)
+        entry_signals = _build_defensive_signals(today, prices, open_positions, pv, "enter_defensive")
         signals = exit_signals + entry_signals
 
     # ── Regime transition: BEAR → BULL ──────────────────────────────────

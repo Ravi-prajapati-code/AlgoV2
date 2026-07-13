@@ -7,7 +7,7 @@ from db.models import Signal, Position
 from strategy.entry import check_entry
 from strategy.exit import check_exit_conditions, initial_stops
 from data.universe import get_sector
-from config.settings import IGNORE_SYMBOLS, BLOCKED_SECTORS, SAFE_HAVEN_SYMBOL, SAFE_HAVEN_ENABLED, GOLDBEES_PROFIT_EXIT_ONLY, GOLDBEES_MAX_LOSS_PCT, GOLDBEES_TREND_FILTER_ENABLED, ENTRY_MODE, ENTRY_MODE_SEED, SECTOR_DURABILITY_WEIGHT
+from config.settings import IGNORE_SYMBOLS, BLOCKED_SECTORS, SAFE_HAVEN_SYMBOL, SAFE_HAVEN_ENABLED, GOLDBEES_PROFIT_EXIT_ONLY, GOLDBEES_MAX_LOSS_PCT, ENTRY_MODE, ENTRY_MODE_SEED, SECTOR_DURABILITY_WEIGHT
 from strategy.defensive_portfolio import MIN_GOLDBEES_HOLD_DAYS
 
 logger = logging.getLogger(__name__)
@@ -110,12 +110,7 @@ def generate_signals(
         if SAFE_HAVEN_ENABLED and SAFE_HAVEN_SYMBOL not in held_symbols:
             sh_ind = indicators.get(SAFE_HAVEN_SYMBOL)
             price = sh_ind.get('close', 0) if sh_ind else 0
-            # Trend filter: only buy GOLDBEES if gold itself is trending up
-            # (close > its own EMA100), not just because equities crashed.
-            trend_ok = (not GOLDBEES_TREND_FILTER_ENABLED) or (
-                sh_ind is not None and price > sh_ind.get('ema_100', 0)
-            )
-            if price > 0 and trend_ok:
+            if price > 0:
                 signals.append(Signal(
                     date=today, symbol=SAFE_HAVEN_SYMBOL, action="BUY",
                     score=100.0, price=price,

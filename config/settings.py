@@ -182,10 +182,6 @@ SAFE_HAVEN_SYMBOL           = "GOLDBEES.NS"
 SAFE_HAVEN_YIELD_ANNUAL     = 0.06         # Fallback 6% annual return if data missing
 GOLDBEES_PROFIT_EXIT_ONLY   = os.getenv("GOLDBEES_PROFIT_EXIT_ONLY", "false").lower() in ("true", "1", "yes")
 GOLDBEES_MAX_LOSS_PCT       = float(os.getenv("GOLDBEES_MAX_LOSS_PCT", "0.07"))  # cut GOLDBEES if loss exceeds this
-# Gate the BEAR-regime GOLDBEES buy on GOLDBEES's own trend (close > its EMA100),
-# instead of an unconditional buy the moment the index flips BEAR. When the
-# filter blocks entry, no signal fires and the slot stays in cash.
-GOLDBEES_TREND_FILTER_ENABLED = os.getenv("GOLDBEES_TREND_FILTER_ENABLED", "false").lower() in ("true", "1", "yes")
 # ──────────────────────────────────────────────
 
 # ──────────────────────────────────────────────
