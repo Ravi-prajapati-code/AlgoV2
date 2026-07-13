@@ -40,6 +40,8 @@ def _make_ind(**overrides) -> dict:
         "above_bb_lower": True,
         "above_bb_mid":   True,
         "atr":            2.0,
+        "adx":            25.0,
+        "st_direction":   1,
         "vol_avg":        500_000,
         "vol_today":      800_000,
         "vol_ratio":      1.6,
@@ -86,12 +88,6 @@ class TestEntryConditions:
         ok, _ = check_entry(_make_ind(rs_rank=60.0))
         assert ok is False
 
-    def test_rsi_out_of_bounds_fails(self):
-        ok, _ = check_entry(_make_ind(rsi=50.0))
-        assert ok is False
-        ok, _ = check_entry(_make_ind(rsi=85.0))
-        assert ok is False
-
     def test_trend_not_aligned_fails(self):
         # Break alignment: price < ema_20
         ok, _ = check_entry(_make_ind(close=90.0, ema_20=98.0))
@@ -102,41 +98,49 @@ class TestEntryConditions:
         ok, _ = check_entry(_make_ind(close=150.0, ema_50=95.0))
         assert ok is False
 
-    def test_excessive_volatility_fails(self):
-        ok, _ = check_entry(_make_ind(atr=10.0, close=100.0)) # 10% > 5%
-        assert ok is False
-
-    def test_low_volume_fails(self):
-        ok, _ = check_entry(_make_ind(vol_ratio=1.0))
-        assert ok is False
-
 
 class TestExitConditions:
-    def test_stop_loss_triggers(self):
+    def test_stop_loss_does_not_trigger(self):
+        """Hard stop-loss removed — only system sell signals exit positions."""
         pos = _make_position(stop_loss=94.0)
         ok, reason = check_exit_conditions(pos, 93.0, rs_rank=100)
-        assert ok is True
-        assert "STOP_LOSS" in reason
+        assert ok is False
+        assert reason == ""
 
-    def test_take_profit_triggers(self):
+    def test_take_profit_does_not_trigger(self):
+        """Profit ceiling removed — only system sell signals exit positions."""
         pos = _make_position(take_profit=113.0)
         ok, reason = check_exit_conditions(pos, 114.0, rs_rank=100)
-        assert ok is True
-        assert "PROFIT_TARGET" in reason
+        assert ok is False
+        assert reason == ""
 
-    def test_trailing_stop_triggers(self):
+    def test_trailing_stop_does_not_trigger(self):
+        """Trailing stop removed — price below trail does not auto-exit."""
         pos = _make_position(entry_price=90.0, peak_price=100.0, trailing_stop=97.0)
         ok, reason = check_exit_conditions(pos, 96.0, rs_rank=100)
-        assert ok is True
-        assert "TRAIL_EXIT" in reason
+        assert ok is False
+        assert reason == ""
 
-    def test_laggard_exit_triggers(self):
-        # Soft exits (laggard/momentum-decay) only fire once profit clears
-        # MIN_PROFIT_FOR_SOFT_EXIT (25% by default). Default take_profit=113.0 would
-        # fire first at that price, so disable it to isolate the laggard-exit check.
-        ok, reason = check_exit_conditions(_make_position(take_profit=0), 130.0, rs_rank=40)
+    def test_momentum_decay_exit_triggers(self):
+        ok, reason = check_exit_conditions(_make_position(), 130.0, indicators={"rsi": 40})
         assert ok is True
-        assert "LAGGARD_EXIT" in reason
+        assert "MOMENTUM_DECAY" in reason
+
+    def test_momentum_decay_exit_triggers_while_underwater(self):
+        # No profit gate — a deteriorating position exits regardless of P&L
+        # (previously an underwater laggard had no exit path once price-based
+        # stops were removed; docs/23_Assumption_Audit.md #24).
+        pos = _make_position(entry_price=100.0)
+        ok, reason = check_exit_conditions(pos, 90.0, indicators={"rsi": 40})
+        assert ok is True
+        assert "MOMENTUM_DECAY" in reason
+
+    def test_low_rs_rank_alone_does_not_trigger_exit(self):
+        # RS-decay exit removed (docs/23_Assumption_Audit.md #23) — a low rs_rank
+        # with no RSI decay should no longer exit a position.
+        ok, reason = check_exit_conditions(_make_position(), 130.0, rs_rank=10, indicators={"rsi": 70})
+        assert ok is False
+        assert reason == ""
 
     def test_hold_when_fine(self):
         ok, reason = check_exit_conditions(_make_position(), 105.0, rs_rank=100)
@@ -145,27 +149,25 @@ class TestExitConditions:
 
 
 class TestInitialStops:
-    def test_stop_loss_below_entry(self):
+    def test_stop_loss_disabled(self):
         stops = initial_stops(100.0)
-        assert stops["stop_loss"] < 100.0
+        assert stops["stop_loss"] == 0.0
 
-    def test_take_profit_above_entry(self):
+    def test_take_profit_disabled(self):
         stops = initial_stops(100.0)
-        assert stops["take_profit"] > 100.0
+        assert stops["take_profit"] == 0.0
 
-    def test_trailing_stop_below_entry(self):
+    def test_trailing_stop_disabled(self):
         stops = initial_stops(100.0)
-        assert stops["trailing_stop"] < 100.0
+        assert stops["trailing_stop"] == 0.0
 
 
 class TestTrailingStop:
-    def test_updates_on_new_high(self):
-        # trailing_stop=85 reflects 15% TRAILING_STOP_PCT below entry=100
-        # new_trail at price=110 = 110 * 0.85 = 93.5 > 85.0 → should ratchet up
+    def test_peak_price_tracks_new_high(self):
         pos = _make_position(peak_price=100.0, trailing_stop=85.0)
         pos = update_trailing_stop(pos, 110.0)
         assert pos.peak_price == 110.0
-        assert pos.trailing_stop > 85.0
+        assert pos.trailing_stop == 85.0  # trail no longer ratchets
 
     def test_no_update_on_lower_price(self):
         pos = _make_position(peak_price=100.0, trailing_stop=95.0)

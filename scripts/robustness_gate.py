@@ -32,17 +32,21 @@ Usage:
 """
 import argparse
 import os
+import re
+import subprocess
 import sys
-from datetime import date, timedelta
+from datetime import timedelta
 
 import numpy as np
+from dotenv import dotenv_values
 
-sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
+REPO_ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
+sys.path.insert(0, REPO_ROOT)
 
 from config.settings import MARKET_INDEX_SYMBOL
 from data.universe import get_all_symbols
 from scripts.out_of_sample_validator import (
-    DEFAULT_HIST_START, DEFAULT_TRAIN_END, DEFAULT_TEST_START,
+    DEFAULT_HIST_START, DEFAULT_TRAIN_END, DEFAULT_TEST_START, DEFAULT_GATE_END,
     DIVERGENCE_FLAG_PCTPOINTS, run_window, fmt,
 )
 from scripts.stress_test_scenarios import (
@@ -55,6 +59,74 @@ SCRATCH_DIR = "outputs/robustness_gate_scratch"
 # rejections this session (extension-filter's sideways-chop PF<1 flip).
 OOS_TEST_TOLERANCE = {"sharpe": 0.10, "pf": 0.10}  # candidate TEST-window may not be worse than baseline by more than this (absolute)
 STRESS_PF_DROP_MAX = 0.10                          # candidate PF may not fall more than this below baseline PF in any scenario
+
+
+_ENV_DEFAULT_RE = re.compile(r'os\.getenv\(\s*["\']([A-Z_][A-Z_0-9]*)["\']\s*,\s*["\']([^"\']*)["\']')
+# Credentials are never "strategy config drift" -- exclude by pattern so a
+# secret value can never be read into `problems` (and printed) in the first
+# place, regardless of which files get scanned above.
+_CREDENTIAL_KEY_RE = re.compile(r'(TOKEN|SECRET|KEY|PASSWORD|PIN|TOTP|MOBILE|CHAT_ID)', re.IGNORECASE)
+
+
+def _coded_env_defaults(filepaths: list) -> dict:
+    """KEY -> literal default string from every `os.getenv("KEY", "default")`
+    call site in the given files (first occurrence wins)."""
+    defaults = {}
+    for path in filepaths:
+        with open(path) as f:
+            for key, val in _ENV_DEFAULT_RE.findall(f.read()):
+                defaults.setdefault(key, val)
+    return defaults
+
+
+def check_config_drift(active_overrides: dict) -> list:
+    """Rule 1 item 4 (docs/29_Project_Governance.md): a gate run must not
+    silently run against an unreviewed config state. Precedent: a stray
+    uncommitted `max_open_positions=5` key in risk_config.yaml
+    contaminated a full day of gate verdicts on 2026-07-11 before being
+    caught by hand.
+
+    Two checks:
+    1. `config/` must be git-clean -- an uncommitted edit there is an
+       unreviewed change riding along with the gate run.
+    2. No strategy-relevant env var (as sourced from the current process
+       env or `.env`, which is what `main.py` actually sees via
+       `load_dotenv(override=True)`) may silently differ from its coded
+       default unless it's part of the explicit `--env` candidate list --
+       otherwise the "baseline" arm is quietly non-default.
+    """
+    problems = []
+
+    dirty = subprocess.run(
+        ["git", "status", "--porcelain", "--", "config/"],
+        capture_output=True, text=True, cwd=REPO_ROOT,
+    ).stdout.strip()
+    if dirty:
+        problems.append(
+            "Uncommitted changes under config/ -- gate run would use an "
+            "unreviewed config state:\n" +
+            "\n".join(f"    {line}" for line in dirty.splitlines())
+        )
+
+    defaults = _coded_env_defaults([
+        os.path.join(REPO_ROOT, "config", "settings.py"),
+        os.path.join(REPO_ROOT, "strategy", "defensive_portfolio.py"),
+    ])
+    dotenv_path = os.path.join(REPO_ROOT, ".env")
+    dotenv_vals = dotenv_values(dotenv_path) if os.path.exists(dotenv_path) else {}
+    effective = {**os.environ, **{k: v for k, v in dotenv_vals.items() if v is not None}}
+
+    for key, default in defaults.items():
+        if key in active_overrides or _CREDENTIAL_KEY_RE.search(key):
+            continue
+        current = effective.get(key)
+        if current is not None and current != default:
+            problems.append(
+                f"{key}={current!r} differs from coded default {default!r} "
+                "and isn't part of --env overrides -- the 'baseline' arm "
+                "would silently run non-default."
+            )
+    return problems
 
 
 def apply_env(overrides: dict):
@@ -72,8 +144,8 @@ def run_full_and_oos_arm(overrides: dict, active: bool) -> dict:
     if active:
         apply_env(overrides)
     train = run_window(DEFAULT_HIST_START, DEFAULT_TRAIN_END)
-    test = run_window(DEFAULT_TEST_START, str(date.today()))
-    full = run_window(DEFAULT_HIST_START, str(date.today()))
+    test = run_window(DEFAULT_TEST_START, DEFAULT_GATE_END)
+    full = run_window(DEFAULT_HIST_START, DEFAULT_GATE_END)
     clear_env(overrides)
     return {"train": train, "test": test, "full": full}
 
@@ -168,6 +240,15 @@ def main():
 
     overrides = dict(kv.split("=", 1) for kv in args.env)
     print(f"[robustness_gate] candidate overrides: {overrides}")
+
+    drift = check_config_drift(overrides)
+    if drift:
+        print("\n=== CONFIG DRIFT DETECTED (Rule 1 item 4, docs/29) ===")
+        for d in drift:
+            print(f"  - {d}")
+        print("\nAborting -- commit or revert config/, and clear any stray "
+              "env var, before this gate result can be trusted.")
+        sys.exit(1)
 
     baseline_oos = run_full_and_oos_arm(overrides, active=False)
     candidate_oos = run_full_and_oos_arm(overrides, active=True)

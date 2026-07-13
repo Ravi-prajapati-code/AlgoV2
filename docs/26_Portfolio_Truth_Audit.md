@@ -1,0 +1,58 @@
+# 26. Portfolio Truth Audit
+
+2026-07-10. Same format as `docs/23_Assumption_Audit.md`, applied to
+portfolio construction instead of entry/exit rules. Question: **is our
+strategy unprofitable because slot count, capital allocation, idle
+cash, replacement policy, rotation speed, diversification, position
+sizing, or entry timing is wrong?** Every rule below is sourced from an
+existing audit (`docs/19-21`, `docs/24`) or a re-verified memory —
+nothing here is newly derived. Flagged where a finding predates the
+2026-07-10 fidelity fix (`df9856f`) and needs re-validation.
+
+| Rule | Why does it exist? | Evidence | Status |
+|---|---|---|---|
+| **Slot count** (`MAX_OPEN_POSITIONS=3`) | Undocumented — no recorded rationale (fewer names = more conviction per name, never stated explicitly) | N-sweep (3/4/5/6/8/10/12/15/20) tested — trade count stays flat, Sharpe/Calmar collapse past N=4 because `base_slot_cash = cash/available_slots` dilutes every real trade as the denominator grows (`docs/20` §2). Slots are full 90.2% of BULL days — capacity binds almost always (`docs/20` §1). N=4 was robustness-gated and **REJECTED** (train wins, test/stress collapse) — pre-fidelity-fix, not yet re-run under `df9856f`. N=5 has a promising diagnostic-only number (CAGR +8.89% vs +5.62%, [[rotation_capacity_followup_20260709]]) but was never robustness-gated at all. | **Closed** for N=4 (rejected, needs re-test post-fix) / **Open** for N=5 (untested) — either way, the dilution bug in the sizing denominator should be fixed first or any N-sweep result is confounded by it. |
+| **Equal / conviction sizing** | Meant to size bigger on higher-score (higher-conviction) candidates via `score_to_size_factor` / `SCORE_BUCKETS` | Confirmed **dead code**: imported in both `backtest/engine.py` and `portfolio/manager.py`, called by neither. Verified empirically — a gate run forcing `SIZE_FACTOR_UNIFORM=1.0` was bit-identical to baseline (`docs/20` §2). All sizing today is flat `cash/available_slots`, not conviction-weighted, despite design docs describing tiered sizing. **Resolved 2026-07-11**: deleted `score_to_size_factor`/`SCORE_BUCKETS`/`score_label`/`_SIZE_FACTOR_UNIFORM` from `strategy/scoring.py` — zero live behavior change (already proven bit-identical), so this was an engineering cleanup, not a research decision. Wiring up real conviction-tiered sizing is a fresh Track-B research item for later, not a Stage-1 fix, since any per-slot size boost is likely capped flat by `MAX_STOCK_ALLOCATION_PCT=0.34` anyway (same structural constraint E1 hit). | **Closed** — dead code removed, design docs now match implementation. Reopen only as a deliberate new conviction-sizing experiment, not a "finish the original design" task. |
+| **Cash allocation / idle cash** | `base_slot_cash = cash/available_slots` deploys free cash into open slots; DD throttles (`×0.50` beyond 10% drawdown, `×0.25` beyond 15%) cut size defensively, `DRAWDOWN_KILL_SWITCH_PCT=0.18` halts buys | **E1 EXECUTED 2026-07-11.** Measurement (N=3, n=167 buy-decision days) found the two candidate mechanisms near-parity, not one dominant: DD-throttle leak ≈₹1.09M summed vs candidate-shortfall leak ≈₹1.01M summed. Denominator-fix arm (`available_slots→num_to_buy`) tested — **structural no-op**, `MAX_STOCK_ALLOCATION_PCT=0.34` clips it straight back down. DD-throttle-removal arm (`DD_THROTTLE_DISABLED_ENABLED`) tested — **PASSED** full gate: FULL CAGR +11.29%→+14.88%, Sharpe 0.63→0.76, MDD improves 18.94%→18.20%; `crash_v_recovery` untouched; only `prolonged_sideways_chop` degrades (no sign flip). See [[e1_idle_cash_ablation_20260711]]. Also uncovered: `config/risk_config.yaml` had a stray uncommitted `max_open_positions=5` — reverted to 3; every prior "18.09% honest baseline" figure this session was almost certainly N=5-contaminated, true N=3 baseline is CAGR +11.29%. | **Resolved** — DD-throttle removal is a validated, gate-passing candidate, kept off-by-default pending a deploy decision (it removes a deliberate risk control, so needs explicit sign-off, not just a passing gate). Denominator-fix arm closed as a structural no-op. |
+| **Replacement policy** (rank-eviction mechanism) | Swap the weakest open position for a materially stronger qualified candidate without changing position count, so capital doesn't sit in a decaying name | Mechanism was unreachable for a long time due to two bugs (stale `trades_ok` gate, miscalibrated thresholds) — both fixed. The 2026-07-10 fidelity fix (`df9856f`) further corrected fill-timing/rank parity on this exact path. Trade-ledger/exit-continuation audit found rotation-driven exits are a small cohort with no aggregate alpha left behind except a tiny-n `TREND_BREAK` case (`docs/20` §5) — "no evidence of a rotation leak worth touching." | **Closed** — tested, bugs fixed, mechanism validated as working correctly. Distinct from dynamic rotation *triggers* below — do not conflate. |
+| **Rotation speed / dynamic replacement triggers** | Hypothesis that actively rotating out weak holdings using a real-time signal (RS/volume/sector) recovers missed opportunity | Correct in hindsight — 72.6% of candidates skipped for `NO_SLOT_AVAILABLE` beat the weakest currently-held position by an average of -3.77% ([[rotation_capacity_followup_20260709]]) — but RS-rank, volume, and sector strength all fail as a *real-time* trigger; nothing computable at decision time identifies the right moment to rotate ([[rotation_logic_synthesis_20260710]]). Built, tested, explained. | **Closed** as a lever (no working trigger exists). The underlying capacity/turnover question — how fast slots *should* turn over structurally, independent of a trigger — stays open, and is really the same question as slot count above. |
+| **Diversification** (sector caps 50%/25%, correlation) | Prevent correlated pile-up within one sector | Sector labels track real co-movement (same-sector correlation significantly higher than cross-sector, p<0.0001), but entry-time correlation doesn't significantly predict trade outcome (rho=-0.101, p=0.218). Correlation-aware position sizing tested and **rejected** — no headroom to help (avg pairwise correlation only ~0.21). Sector blacklist tested and **rejected** — clean overfit, train inflated 3x vs flat test (`docs/24`). | **Closed** — caps are structurally justified (real risk tracking) but not a return-improving lever; no refinement of diversification has survived testing. |
+| **Position sizing** (risk-based variants: ATR, correlation) | Test whether ATR-based (3x) or correlation-aware sizing improves risk-adjusted return beyond flat cash/slots | Both **rejected** — tax CAGR with no stress-scenario benefit at MAX_POSITIONS=3 ([[phase2_improvements]]). Directly tied to the dead-code finding above: the conviction-tiered sizing the design docs describe was never actually running. | **Closed** for ATR/correlation variants (rejected) — but the sizing-subsystem doc/code drift itself (see conviction-sizing row) is unresolved. |
+| **Entry timing** (slot-open selection / opportunity cost) | When a slot opens, the top-scored qualified signal is bought same day — untested whether same-day execution vs. a short delay changes outcomes | The 111 selected entries underperform the 1,288 passed-over qualified signals by ~1.7pp over the next 21 sessions, benchmark-adjusted (t≈1.7 — suggestive, not significant). Selection moments cluster right after exits ("Leak 3", `docs/20` §4). An entry-lag ablation (E4) was designed but explicitly queued last, conditional on a churn-cohort audit (E3) implicating entry clustering — that precondition study has not been run, so E4 never started. | **Open / Research** — real lead, statistically weak (t≈1.7), never tested as an actual lever. |
+| **Friction / churn** (not one of the 8 named parameters, but directly load-bearing) | Slippage + charges model turnover cost | Combined friction ≈3.2pp/yr (slippage 1.69pp + charges 1.54pp, 12% of gross P&L). 61% of closed trades hold <31 days and that cohort is net-negative *before* friction (-₹75k realized) — the strategy pays to trade at a frequency whose short-duration component loses money, while the proven edge lives in 31+ day holds (`docs/20` §7). Whether this friction is structural (spread evenly) or concentrated (a few whipsaw loops) is unresolved — churn-cohort audit (E3) and charges-vs-live-contract-note validation (E6) were both ranked as the **top research priority** (highest information gain, zero risk, hours of effort) and have not been run. | **Open / Research** — highest-priority unstarted item; directly answers whether this is fixable (concentrated) or a fixed cost of the current design (structural). |
+
+## Bottom line
+
+**Update 2026-07-11**: the idle-cash ablation (E1) has now been run —
+see the cash-allocation row above. It found a validated, gate-passing
+fix (DD-throttle removal), not just a diagnosis. One item remains
+quantified, ranked, and *not yet run*: the churn-cohort audit (E3, top
+research priority). That's cheap, gate-controlled, and would convert
+this audit's remaining "Open" friction row into a closed answer before
+any new lever is proposed. What the audit as a whole shows: the
+strategy was designed as a risk-management stack (conviction tiers,
+drawdown throttles, tight slots) and it succeeds on the exit side, but
+paid its real cost on the deployment side — capital chronically
+withheld from a signal proven worth ~9.6pp/yr on what's actually
+deployed, and what is deployed churns at 3.2pp/yr of friction with a
+net-negative short-hold cohort (`docs/20` §8).
+
+Separately — and this is the consistency angle the user's stated goal
+(`docs/25_Path_To_Consistent_Profit.md`) actually turns on — nothing in
+this table explains the `crash_v_recovery` recurring-killer pattern
+([[crash_v_recovery_recurring_killer_20260710]]). That failure mode
+lives in candidate *selection/filtering* behavior during a specific
+regime, not in slot count, cash, or sizing. Fixing the leaks in this
+table would raise the average; it would not by itself fix the one
+scenario that has broken three unrelated candidate levers so far.
+
+## How to apply
+
+Before proposing any new portfolio-construction lever: check this table
+first. If it's a variant of idle-cash deployment, sizing, replacement,
+or diversification, treat the existing verdict as binding unless there
+is a specific new mechanism, not just a new threshold. The two rows
+marked "Needs redesign" (idle cash, conviction sizing) and the two
+marked "Open/Research" with a *designed-but-unrun* experiment attached
+(entry timing/E4, friction/E3+E6) are the only rows where more testing
+— not more ideas — is the actual next step.

@@ -59,6 +59,7 @@ QUALITY_STOCKS = []  # no longer used in defensive allocation
 GOLD_ETF = "GOLDBEES.NS"
 LIQUIDBEES = "LIQUIDBEES.NS"
 LIQUIDBEES_ENABLED = os.getenv("LIQUIDBEES_ENABLED", "0") == "1"  # disabled — complexity > yield at current portfolio size
+LIQUIDBEES_TARGET_WEIGHT = 0.45
 
 ALL_DEFENSIVE_SYMBOLS = [GOLD_ETF, LIQUIDBEES]
 
@@ -80,6 +81,20 @@ def build_target_weights() -> dict:
 
 def is_defensive_symbol(symbol: str) -> bool:
     return symbol in ALL_DEFENSIVE_SYMBOLS
+
+
+def is_score_declining(symbol: str, score_history: dict, min_days: int) -> bool:
+    """
+    True if symbol's composite_rank (cross-sectional RS-rank x ATR% percentile)
+    has declined every single day for min_days consecutive days.
+    Shared by portfolio/manager.py (live) and backtest/engine.py (docs/29 Rule 3 —
+    one implementation for logic that must run in both contexts).
+    """
+    h = score_history.get(symbol)
+    if h is None or len(h) < min_days:
+        return False
+    recent = list(h)[-min_days:]
+    return all(recent[i] > recent[i + 1] for i in range(len(recent) - 1))
 
 
 def get_defensive_entries(portfolio_val: float, prices: dict, slippage_pct: float = 0.001) -> list:

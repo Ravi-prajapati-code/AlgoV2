@@ -28,7 +28,7 @@ portfolio:
   currency: INR
   initial_capital: 100000
   max_new_trades_per_day: 5
-  max_open_positions: 3
+  max_open_positions: 5
   sizer_cash_buffer_pct: 0.05
 sector_caps:
   default: 1.0

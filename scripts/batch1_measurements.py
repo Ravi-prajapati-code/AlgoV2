@@ -28,7 +28,10 @@ from backtest.engine import BacktestEngine
 from scripts.benchmark_attribution import sharpe_ratio, max_drawdown_pct, cagr_from_returns
 
 START = "2022-01-01"
-END = str(date.today())
+# BATCH1_END pins the window end — set to the last COMPLETE trading day. A run on 2026-07-08
+# with today's partial bar produced a corrupted baseline (CAGR -0.01% vs +12.26% the day
+# before on identical code), so never default to an in-progress session date blindly.
+END = os.getenv("BATCH1_END", str(date.today()))
 REENTRY_GAP_DAYS = 10
 
 
@@ -155,6 +158,18 @@ def main():
     print(f"  NO-GOLD  : CAGR={m_ng['cagr']:+7.2f}%  MDD={m_ng['mdd']:7.2f}%  "
           f"Sharpe={m_ng['sharpe']:5.2f}  trades={m_ng['trades']}")
     print(f"  Gold-windfall share of CAGR: {m_base['cagr'] - m_ng['cagr']:+.2f}pp")
+
+    # ---------- 4. E2A CASH PARKING (arithmetic, docs/19) ----------
+    print("\n=== 4. E2A CASH PARKING (6.5% risk-free on idle cash) ===")
+    cash_all = pd.Series(base.cash_curve).sort_index()
+    cash_all.index = pd.to_datetime(cash_all.index).normalize()
+    idle_all = (cash_all / eq).clip(lower=0)
+    mean_idle = float(idle_all.mean())
+    rf = 0.065
+    e2a_pp = mean_idle * rf * 100
+    print(f"  Mean idle cash fraction: {mean_idle*100:.1f}% of equity")
+    print(f"  Deterministic carry uplift: {e2a_pp:+.2f}pp/yr (idle × {rf*100:.1f}% RF)")
+    print(f"  Baseline CAGR: {m_base['cagr']:+.2f}%  →  E2a-adjusted: {m_base['cagr'] + e2a_pp:+.2f}%")
     return 0
 
 

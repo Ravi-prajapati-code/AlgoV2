@@ -244,7 +244,7 @@ def save_rejected_log(result: BacktestResult, filepath: str = None):
         filepath = os.path.join(OUTPUTS_DIR, "backtest_rejected.csv")
 
     # Extract rejected decisions (signal=NO or rs_pass=FAIL)
-    fieldnames = ["date", "symbol", "rs_pass", "signal", "reason", "rank_score", "rs_rank", "selected"]
+    fieldnames = ["date", "symbol", "rs_pass", "signal", "reason", "rank_score", "rs_rank", "selected", "regime", "market_bullish", "adx", "extension_pct", "breakout_dist_pct", "turnover", "vol_ratio", "sector", "sector_rel_rs"]
     rejected = [d for d in result.decision_log if d.get("selected") == "NO"]
 
     if not rejected:
@@ -277,7 +277,7 @@ def save_decision_log(result: BacktestResult, filepath: str = None):
         os.makedirs(OUTPUTS_DIR, exist_ok=True)
         filepath = os.path.join(OUTPUTS_DIR, "backtest_decisions.csv")
 
-    fieldnames = ["date", "symbol", "rs_pass", "signal", "reason", "rank_score", "rs_rank", "selected"]
+    fieldnames = ["date", "symbol", "rs_pass", "signal", "reason", "rank_score", "rs_rank", "selected", "regime", "market_bullish", "adx", "extension_pct", "breakout_dist_pct", "turnover", "vol_ratio", "sector", "sector_rel_rs"]
     # Add 'date' field from daily scan if not already in decision_log entries
     with open(filepath, "w", newline="") as f:
         writer = csv.DictWriter(f, fieldnames=fieldnames, extrasaction="ignore")

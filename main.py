@@ -14,6 +14,7 @@ Usage
 """
 
 import argparse
+import os
 import sys
 import logging
 from datetime import date
@@ -147,6 +148,14 @@ def cmd_backtest(args):
     # 500-day warmup ensures EMA(150) is fully converged at backtest day 1 (needs ~450 trading days)
     from datetime import timedelta
     warmup_start = start - timedelta(days=500)
+    if os.getenv("REQUIRE_CACHED_DATA") == "1":
+        # Strict/gate mode can't live-fetch to tell a fillable cache gap
+        # apart from a symbol that genuinely has no history this far back
+        # (e.g. TMCV.NS, no data before 2025-11-12 -- confirmed via a
+        # live backfill attempt). Drop such symbols from this run instead
+        # of hard-failing the whole gate (docs/29 Rule 1 item 3 follow-up).
+        from data.fetcher import filter_symbols_with_insufficient_history
+        symbols = filter_symbols_with_insufficient_history(symbols, warmup_start)
     data     = fetch_all(symbols, lookback_days=lookback, start=warmup_start, end=end)
 
     print(f"Fetching market index {MARKET_INDEX_SYMBOL}…")

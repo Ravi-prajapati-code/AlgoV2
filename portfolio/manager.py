@@ -22,30 +22,16 @@ from config.settings import (
     INITIAL_CAPITAL, round_to_tick, MAX_OPEN_POSITIONS, SAFE_HAVEN_SYMBOL, SIZER_CASH_BUFFER_PCT,
     MAX_STOCK_ALLOCATION_PCT, DRAWDOWN_REDUCE_SIZE_PCT, DRAWDOWN_REDUCE_TIER2_MULT, GTT_LIMIT_BUFFER_PCT,
     REPLACE_MIN_NEW_RS, REPLACE_MAX_HELD_RS, REPLACE_MIN_GAP, MIN_PROFIT_SOFT,
-    MAX_NEW_TRADES_PER_DAY, DRAWDOWN_KILL_SWITCH_PCT,
+    MAX_NEW_TRADES_PER_DAY, DRAWDOWN_KILL_SWITCH_PCT, DD_THROTTLE_DISABLED_ENABLED,
 )
 from strategy.defensive_portfolio import (
     ROTATION_ENABLED, ROTATE_EXIT_RS, ROTATE_INTO_RS, ROTATE_MIN_GAP,
     RIDE_WINNER_ENABLED, RIDE_WINNER_GAP_PCT,
     SCORE_DROP_EXIT_ENABLED, SCORE_DROP_DAYS,
-    is_defensive_symbol,
+    is_defensive_symbol, is_score_declining,
 )
 
 _SCORE_HISTORY_PATH = os.path.join(os.path.dirname(__file__), "..", "db", "score_history.json")
-
-
-def _is_score_declining(symbol: str, score_history: dict, min_days: int) -> bool:
-    """
-    Return True if symbol's composite momentum score (rs_ratio × rs_ratio_1m) has
-    declined every single day for min_days consecutive days.
-    Uses absolute RS ratio values — not the cross-sectional percentile rank — so the
-    signal reflects genuine momentum decay, not just other stocks improving.
-    """
-    h = score_history.get(symbol)
-    if h is None or len(h) < min_days:
-        return False
-    recent = list(h)[-min_days:]
-    return all(recent[i] > recent[i + 1] for i in range(len(recent) - 1))
 
 
 def _load_score_history() -> Dict[str, list]:
@@ -253,7 +239,7 @@ class PortfolioManager:
                        if not is_defensive_symbol(p.symbol)
                        and p.symbol != SAFE_HAVEN_SYMBOL]
             for pos in list(non_def):
-                if not _is_score_declining(pos.symbol, score_history, SCORE_DROP_DAYS):
+                if not is_score_declining(pos.symbol, score_history, SCORE_DROP_DAYS):
                     continue
                 logger.info(f"  [SCORE-DROP] {pos.symbol} RS declining {SCORE_DROP_DAYS} days — exiting")
                 evict_sig = Signal(
@@ -498,12 +484,13 @@ class PortfolioManager:
                 base_slot_cash = spendable / max(available_slots, 1)
                 # Graduated size reduction under drawdown — mirrors backtest engine
                 current_dd = (self.peak_value - portfolio_val) / self.peak_value if self.peak_value > 0 else 0.0
-                if current_dd >= DRAWDOWN_REDUCE_SIZE_PCT * DRAWDOWN_REDUCE_TIER2_MULT:
-                    base_slot_cash *= 0.25
-                    logger.info("[Risk] DD %.1f%% — slot size cut to 25%%", current_dd * 100)
-                elif current_dd >= DRAWDOWN_REDUCE_SIZE_PCT:
-                    base_slot_cash *= 0.50
-                    logger.info("[Risk] DD %.1f%% — slot size cut to 50%%", current_dd * 100)
+                if not DD_THROTTLE_DISABLED_ENABLED:
+                    if current_dd >= DRAWDOWN_REDUCE_SIZE_PCT * DRAWDOWN_REDUCE_TIER2_MULT:
+                        base_slot_cash *= 0.25
+                        logger.info("[Risk] DD %.1f%% — slot size cut to 25%%", current_dd * 100)
+                    elif current_dd >= DRAWDOWN_REDUCE_SIZE_PCT:
+                        base_slot_cash *= 0.50
+                        logger.info("[Risk] DD %.1f%% — slot size cut to 50%%", current_dd * 100)
                 for i in range(num_to_buy):
                     # Check overall risk limits first
                     allowed, reason = can_open_new_trades(
@@ -518,7 +505,7 @@ class PortfolioManager:
 
                     # Feature 3: skip if RS rank has been falling for N consecutive days
                     if (SCORE_DROP_EXIT_ENABLED
-                            and _is_score_declining(sig.symbol, score_history, SCORE_DROP_DAYS)):
+                            and is_score_declining(sig.symbol, score_history, SCORE_DROP_DAYS)):
                         logger.info(
                             f"  [SKIP_BUY] {sig.symbol} RS declining {SCORE_DROP_DAYS} days — skip"
                         )

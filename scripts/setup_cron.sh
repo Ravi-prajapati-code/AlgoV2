@@ -9,7 +9,9 @@
 #   09:25 IST Mon-Fri  — Morning P&L summary via Telegram
 #   15:40 IST Mon-Fri  — GTT coverage audit: alert on any naked (unprotected) position
 #   15:45 IST Mon-Fri  — Run paper/live daily strategy after market close
+#   15:52 IST Mon-Fri  — Forward shadow ledger (Q3 #1: append-only RS cross-section)
 #   15:55 IST Mon-Fri  — Health check: alert if run failed
+#   16:05 IST Saturday — Score shadow ledger forward returns (20d horizon)
 #   16:30 IST Mon-Fri  — Nightly DB backup (30-day retention)
 #   13:00 IST Friday   — Weekly universe re-rank
 
@@ -66,8 +68,14 @@ RUNNER_CRON="45 15 * * 1-5 cd $ALGO_DIR && $RUN_CMD >> $LOG_DIR/daily_run_\$(dat
 #     just before the daily runner. Schedule per monitoring/gtt_coverage.py's own docstring.
 GTT_COVERAGE_CRON="40 15 * * 1-5 cd $ALGO_DIR && $PYTHON $ALGO_DIR/monitoring/gtt_coverage.py >> $LOG_DIR/gtt_coverage.log 2>&1"
 
+# 5b. Forward shadow ledger (3:52 PM IST): append-only RS cross-section for Q3 #1
+SHADOW_LEDGER_CRON="52 15 * * 1-5 cd $ALGO_DIR && $PYTHON $ALGO_DIR/scripts/shadow_ledger.py >> $LOG_DIR/shadow_ledger.log 2>&1"
+
 # 6. Health check (3:55 PM IST): alert if today's log is empty/missing/errored
 HEALTH_CRON="55 15 * * 1-5 cd $ALGO_DIR && $PYTHON $ALGO_DIR/scripts/health_check.py >> $LOG_DIR/health.log 2>&1"
+
+# 6b. Shadow ledger scoring (Saturday 4:05 PM IST): forward 20d quintile spread
+SHADOW_SCORE_CRON="5 16 * * 6 cd $ALGO_DIR && $PYTHON $ALGO_DIR/scripts/shadow_ledger_score.py >> $LOG_DIR/shadow_ledger_score.log 2>&1"
 
 # 7. Nightly DB backup (4:30 PM IST): 30-day rolling backup
 BACKUP_CRON="30 16 * * 1-5 cd $ALGO_DIR && $PYTHON $ALGO_DIR/scripts/backup_db.py >> $LOG_DIR/backup.log 2>&1"
@@ -84,7 +92,7 @@ MARKER="# AlgoTrading"
 # Get existing crontab minus old Algo lines (ignore errors if no crontab yet)
 EXISTING=$(crontab -l 2>/dev/null | grep -v "$MARKER" || true)
 
-printf '%s\n%s\n%s\n%s\n%s\n%s\n%s\n%s\n%s\n%s\n%s\n' \
+printf '%s\n%s\n%s\n%s\n%s\n%s\n%s\n%s\n%s\n%s\n%s\n%s\n%s\n' \
   "$EXISTING" \
   "$AUTO_TOKEN_CRON  $MARKER:auto_token" \
   "$REMINDER_CRON    $MARKER:token_reminder" \
@@ -93,7 +101,9 @@ printf '%s\n%s\n%s\n%s\n%s\n%s\n%s\n%s\n%s\n%s\n%s\n' \
   "$PNL_CRON         $MARKER:pnl_summary" \
   "$GTT_COVERAGE_CRON $MARKER:gtt_coverage" \
   "$RUNNER_CRON      $MARKER:daily_run" \
+  "$SHADOW_LEDGER_CRON $MARKER:shadow_ledger" \
   "$HEALTH_CRON      $MARKER:health_check" \
+  "$SHADOW_SCORE_CRON $MARKER:shadow_ledger_score" \
   "$BACKUP_CRON      $MARKER:db_backup" \
   "$UNIVERSE_CRON    $MARKER:universe_weekly" \
   "$UNIVERSE_DAILY_CRON $MARKER:universe_daily" \
@@ -108,7 +118,8 @@ echo ""
 echo "Next steps:"
 echo "  1. Token auto-refreshes at 08:30 IST (fallback reminder at 08:45)"
 echo "  2. Position reconcile + P&L summary sent at 09:20–09:25 IST"
-echo "  3. Strategy runs at 15:45 IST, health check at 15:55"
+echo "  3. Strategy runs at 15:45 IST, shadow ledger at 15:52, health check at 15:55"
+echo "  3b. Shadow ledger scored Saturdays 16:05 IST"
 echo "  4. DB backed up at 16:30 IST → db/backups/ (30-day retention)"
 echo "  5. Universe re-ranked every Friday 13:00 IST"
 echo ""

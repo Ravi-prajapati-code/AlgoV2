@@ -26,11 +26,18 @@ import argparse
 import os
 import subprocess
 import sys
-from datetime import date
 
 DEFAULT_HIST_START = "2022-01-01"
 DEFAULT_TRAIN_END  = "2024-12-31"
 DEFAULT_TEST_START = "2025-01-01"
+
+# Pinned data snapshot (docs/29 Rule 1 item 3) -- was `str(date.today())`,
+# which made two runs of "the same" window months apart non-reproducible
+# and let a cache gap silently trigger a live Upstox fetch. 2026-06-04 is
+# the latest date db/trading.db's ohlcv_cache has for ALL 211 cached
+# symbols (verified 2026-07-11) -- bump deliberately, with a fresh cache
+# coverage check, when re-baselining is actually intended.
+DEFAULT_GATE_END = "2026-06-04"
 
 # Flag inconsistency if a metric moves by more than this between windows
 # (relative, on metrics already expressed as %s / ratios)
@@ -39,7 +46,10 @@ DIVERGENCE_FLAG_PCTPOINTS = {"wr": 15.0, "pf": 0.8, "sharpe": 0.6}
 
 def run_window(start: str, end: str) -> dict:
     cmd = ["python3", "main.py", "backtest", "--start", start, "--end", end]
-    r = subprocess.run(cmd, capture_output=True, text=True)
+    # Gate/validation runs must fail loudly on a cache gap rather than
+    # silently patching it with a live Upstox call (docs/29 Rule 1 item 3).
+    env = {**os.environ, "REQUIRE_CACHED_DATA": "1"}
+    r = subprocess.run(cmd, capture_output=True, text=True, env=env)
     if r.stderr.strip():
         print(f"  [{start}..{end}] stderr:\n{r.stderr.strip()}")
     vals = {}
@@ -72,7 +82,7 @@ def main():
     ap.add_argument("--hist-start", default=DEFAULT_HIST_START)
     ap.add_argument("--train-end", default=DEFAULT_TRAIN_END)
     ap.add_argument("--test-start", default=DEFAULT_TEST_START)
-    ap.add_argument("--test-end", default=str(date.today()))
+    ap.add_argument("--test-end", default=DEFAULT_GATE_END)
     args = ap.parse_args()
 
     print(f"[out_of_sample] TRAIN {args.hist_start} -> {args.train_end} | "

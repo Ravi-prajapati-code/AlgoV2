@@ -7,7 +7,6 @@ sys.path.insert(0, str(Path(__file__).parent.parent.parent))
 import json
 import os
 import streamlit as st
-import pandas as pd
 
 from dashboard.charts import equity_curve_chart, pnl_bar_chart
 from config.settings import INITIAL_CAPITAL, OUTPUTS_DIR

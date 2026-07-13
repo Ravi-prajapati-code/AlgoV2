@@ -1,9 +1,9 @@
+import os
 import pandas as pd
-import numpy as np
-from config.settings import MAX_OPEN_POSITIONS, MARKET_FILTER_ENABLED
+from config.settings import MARKET_FILTER_ENABLED
 
 MIN_INDEX_CANDLES = 100
-REGIME_CONFIRM_DAYS = 3   # consecutive days required to confirm a regime change
+REGIME_CONFIRM_DAYS = int(os.getenv("REGIME_CONFIRM_DAYS", "3"))   # consecutive days required to confirm a regime change
 
 def detect_regime(index_df: pd.DataFrame) -> str:
     """
@@ -45,12 +45,3 @@ def is_index_confirming(index_df: pd.DataFrame) -> bool:
     close = index_df['close']
     ema20 = close.ewm(span=20, adjust=False).mean()
     return bool(close.iloc[-1] > ema20.iloc[-1])
-
-def regime_max_slots(regime: str) -> int:
-    return MAX_OPEN_POSITIONS
-
-def regime_position_factor(regime: str) -> float:
-    return 1.0
-
-def regime_min_score(regime: str) -> float:
-    return 85.0

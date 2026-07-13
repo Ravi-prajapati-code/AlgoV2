@@ -1,104 +1,43 @@
 import os
-from typing import Tuple, Dict
+from typing import Tuple
 from db.models import Position
-from config.settings import (
-    STOP_LOSS_PCT, TAKE_PROFIT_PCT, TRAILING_STOP_PCT,
-    TRAIL_TIGHTEN_THRESHOLD, TRAIL_TIGHTEN_PCT,
-    ATR_TRAIL_MULT_INITIAL, ATR_TRAIL_MULT_TIGHT,
-    round_to_tick,
-)
 
 def initial_stops(price: float, atr: float = 0) -> dict:
     """
-    Hard stop at STOP_LOSS_PCT below entry.
-    Take profit is an emergency ceiling only (set high — strategy relies on trailing stop).
-    Initial trailing stop: ATR-based if atr provided, else fixed %.
-    ATR trail is floored at the hard stop so it is never set BELOW the hard stop.
+    Stop-loss, trailing-stop, and profit-ceiling are no longer used for exits —
+    positions close only on system sell signals (see check_exit_conditions).
     """
-    hard_stop = round_to_tick(price * (1 - STOP_LOSS_PCT))
-    if atr > 0:
-        trail = max(round_to_tick(price - (ATR_TRAIL_MULT_INITIAL * atr)), hard_stop)
-    else:
-        trail = max(round_to_tick(price * (1 - TRAILING_STOP_PCT)), hard_stop)
     return {
-        "stop_loss":     hard_stop,
-        "take_profit":   round_to_tick(price * (1 + TAKE_PROFIT_PCT)),
-        "trailing_stop": trail,
+        "stop_loss":     0.0,
+        "take_profit":   0.0,
+        "trailing_stop": 0.0,
         "peak_price":    price,
     }
 
-REGIME_AWARE_TRAIL = os.getenv("REGIME_AWARE_TRAIL", "0") == "1"
-
-# Experiment flag (docs/19 trail-ablation arm): "1" disables the trailing stop entirely — the
-# ratchet never updates and TRAIL_EXIT never fires. Hard stop, profit ceiling, soft exits and
-# crash protection are unaffected. Default "0" = production behavior unchanged.
-TRAILING_STOP_DISABLED = os.getenv("TRAILING_STOP_DISABLED", "0") == "1"
-
 def update_trailing_stop(pos: Position, current_price: float, atr: float = 0, regime: str = None) -> Position:
-    """
-    Ratchet up trailing stop as price rises.
-    Uses ATR-based distance when atr is provided (preferred).
-    Tightens the multiplier/% once profit exceeds TRAIL_TIGHTEN_THRESHOLD.
-    """
-    if TRAILING_STOP_DISABLED:
-        if current_price > pos.peak_price:
-            pos.peak_price = current_price
-        return pos
+    """No-op — trailing stops removed; peak_price tracked for display only."""
     if current_price > pos.peak_price:
         pos.peak_price = current_price
-        profit_pct = ((current_price / pos.entry_price) - 1) if pos.entry_price > 0 else 0.0
-        tightened = profit_pct >= TRAIL_TIGHTEN_THRESHOLD
-
-        if atr > 0:
-            mult = ATR_TRAIL_MULT_TIGHT if tightened else ATR_TRAIL_MULT_INITIAL
-            new_trail = current_price - (mult * atr)
-        else:
-            trail_pct = TRAIL_TIGHTEN_PCT if tightened else TRAILING_STOP_PCT
-            new_trail = current_price * (1 - trail_pct)
-
-        if new_trail > pos.trailing_stop:
-            pos.trailing_stop = round_to_tick(new_trail)
-
-    # Regime-aware tightening: re-evaluate off the existing peak even without a new high today,
-    # so a BEAR regime flip protects the position immediately instead of waiting for a new peak
-    # (the block above only ever fires on new-high days).
-    if REGIME_AWARE_TRAIL and regime == "BEAR":
-        if atr > 0:
-            bear_trail = pos.peak_price - (ATR_TRAIL_MULT_TIGHT * atr)
-        else:
-            bear_trail = pos.peak_price * (1 - TRAIL_TIGHTEN_PCT)
-        if bear_trail > pos.trailing_stop:
-            pos.trailing_stop = round_to_tick(bear_trail)
-
     return pos
 
-MIN_PROFIT_FOR_SOFT_EXIT = float(os.getenv("MIN_PROFIT_SOFT", "0.25"))
-LAGGARD_RS_THRESHOLD     = float(os.getenv("LAGGARD_RS",     "50"))
 MOMENTUM_RSI_THRESHOLD   = float(os.getenv("MOMENTUM_RSI",   "50"))
 
 def check_exit_conditions(pos: Position, current_price: float, rs_rank: float = 100, indicators: dict = None) -> Tuple[bool, str]:
-    # 1. Hard Stop Loss — always applies
-    if current_price < pos.stop_loss:
-        return True, "STOP_LOSS"
+    # Stop-loss, trailing-stop, and profit-ceiling removed — exits fire only on the
+    # system's own sell signals (momentum decay, regime/crash protection, score-drop,
+    # rotation). See strategy/signals.py for the rest of the chain.
+    # No profit gate — a deteriorating position exits regardless of P&L; the prior
+    # gate left underwater laggards with no exit path once price-based stops were
+    # removed (docs/23_Assumption_Audit.md #24).
+    #
+    # RS-decay exit removed (docs/23_Assumption_Audit.md #23): robustness_gate
+    # bracket test (LAGGARD_RS 30/40/50/65) showed it never independently fires —
+    # MOMENTUM_DECAY (RSI) always triggers first across the real backtest history —
+    # and the one point where it did bind independently (65) hurt crash-recovery
+    # capture with no offsetting benefit. rs_rank kept in the signature for caller
+    # compatibility; unused here now.
 
-    # 2. Take Profit — always applies
-    if pos.take_profit > 0 and current_price >= pos.take_profit:
-        return True, "PROFIT_TARGET"
-
-    # 3. Trailing Stop Loss — always applies (unless the docs/19 ablation flag disables it)
-    if not TRAILING_STOP_DISABLED and pos.trailing_stop > 0 and current_price < pos.trailing_stop:
-        return True, "TRAIL_EXIT"
-
-    # Soft exits only fire once position has reached MIN_PROFIT_FOR_SOFT_EXIT
-    profit_pct = ((current_price / pos.entry_price) - 1) if pos.entry_price > 0 else 0.0
-    if profit_pct < MIN_PROFIT_FOR_SOFT_EXIT:
-        return False, ""
-
-    # 4. Laggard Exit (Momentum Loss) — soft
-    if rs_rank < LAGGARD_RS_THRESHOLD:
-        return True, f"LAGGARD_EXIT (RS Rank < {LAGGARD_RS_THRESHOLD:.0f})"
-
-    # 5. Momentum Decay (RSI) — soft
+    # Momentum Decay (RSI) — soft
     if indicators and indicators.get("rsi", 100) < MOMENTUM_RSI_THRESHOLD:
         return True, f"MOMENTUM_DECAY (RSI < {MOMENTUM_RSI_THRESHOLD:.0f})"
 

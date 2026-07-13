@@ -18,7 +18,7 @@ load_dotenv(override=True)
 
 from db.repository import (
     init_db, load_positions, load_snapshots, save_signal,
-    save_position, close_position, get_last_position, was_sold_today,
+    save_position, close_position_and_save_trade, get_last_position, was_sold_today,
     snapshot_exists_for_date, get_last_ohlcv_close, bear_swing_sold_within,
 )
 from data.fetcher import fetch_all, fetch_index
@@ -37,10 +37,11 @@ from strategy.defensive_portfolio import (
 from portfolio.manager import PortfolioManager
 from portfolio.allocator import can_open_position
 from portfolio.sizer import calculate_shares_for_value
-from charges.calculator import buy_charges
+from charges.calculator import buy_charges, net_pnl
+from config.settings import round_to_tick
 from runner.signal_output import write_signals, write_portfolio_state
 from config.settings import INITIAL_CAPITAL, MARKET_INDEX_SYMBOL, IGNORE_SYMBOLS, MAX_STOCK_ALLOCATION_PCT, GOLDBEES_PROFIT_EXIT_ONLY, GOLDBEES_MAX_LOSS_PCT
-from db.models import Position, Signal
+from db.models import Position, Signal, Trade
 
 logging.basicConfig(
     level=logging.INFO,
@@ -153,34 +154,89 @@ def _build_defensive_signals(today: date, prices: dict, open_positions: list,
     return signals
 
 
+def _broker_api_responsive(broker) -> bool:
+    """Return True if the broker API is reachable (not a stale-token / network failure)."""
+    try:
+        cash = broker.get_available_cash()
+        pv = broker.get_portfolio_value()
+        return cash > 0 or pv > 0
+    except Exception:
+        return False
+
+
+def _close_broker_ghost_position(broker, pos: Position, today: date, exit_reason: str = "BROKER_SYNC_CLOSE"):
+    """DB shows OPEN but broker no longer holds the stock (GTT/manual sell detected)."""
+    from portfolio.manager import cancel_stale_gtts
+
+    cancel_stale_gtts(broker, pos.symbol, f"ghost close — {exit_reason}")
+
+    exit_price = get_last_ohlcv_close(pos.symbol) or pos.entry_price
+    exit_price = round_to_tick(exit_price)
+    entry = pos.entry_date.date() if hasattr(pos.entry_date, "date") else pos.entry_date
+    hold_days = (today - entry).days if entry else 0
+    result = net_pnl(pos.entry_price, exit_price, pos.shares)
+    trade = Trade(
+        symbol=pos.symbol, sector=pos.sector,
+        entry_date=pos.entry_date, exit_date=today,
+        entry_price=pos.entry_price, exit_price=exit_price,
+        shares=pos.shares, gross_pnl=result["gross_pnl"],
+        charges=result["total_charges"], net_pnl=result["net_pnl"],
+        exit_reason=exit_reason, hold_days=hold_days,
+    )
+    close_position_and_save_trade(pos.symbol, trade)
+    logger.warning(
+        "[Sync] %s closed in DB — broker no longer holds it (%s @ ₹%.2f, P&L %+.1f%%)",
+        pos.symbol, exit_reason, exit_price, result["net_pct"],
+    )
+
+
 def sync_portfolio_with_broker(broker, today: date):
     """
     Ensure DB 'OPEN' positions exactly match Broker live holdings.
-    1. Close DB positions not found in Broker.
+    1. Close DB positions not found in Broker (records trade — fixes GTT ghost positions).
     2. Add Broker holdings not found in DB.
     3. Update share counts if they differ.
+    4. Cancel any legacy stop-loss GTTs — exits are signal-only now.
     """
     if not broker:
         return
 
     logger.info("[Sync] Reconciling DB with Broker holdings...")
     try:
+        from portfolio.manager import cancel_stale_gtts
+
         raw_live_positions = broker.get_positions()
         live_positions = [p for p in raw_live_positions if p.symbol not in IGNORE_SYMBOLS]
+        db_positions = {p.symbol: p for p in load_positions(status="OPEN")}
 
-        # Guard: if broker returned empty list, it is likely an API error — do not wipe DB positions
-        if not live_positions:
-            logger.warning("[Sync] Broker returned 0 positions — skipping sync to avoid false state wipe.")
+        if not live_positions and db_positions:
+            if not _broker_api_responsive(broker):
+                logger.warning(
+                    "[Sync] Broker returned 0 positions but API looks down — "
+                    "skipping ghost close to avoid false wipe."
+                )
+                return
+            logger.info(
+                "[Sync] Broker holds 0 positions but DB has %d open — "
+                "closing all as broker-exited (likely GTT/manual sell).",
+                len(db_positions),
+            )
+            for pos in list(db_positions.values()):
+                _close_broker_ghost_position(broker, pos, today)
             return
 
-        db_positions = {p.symbol: p for p in load_positions(status="OPEN")}
+        if not live_positions:
+            return
+
         live_symbols = {lp.symbol for lp in live_positions}
 
         # 1. Close positions found in DB but NOT in Broker
-        for symbol in db_positions:
+        for symbol, pos in list(db_positions.items()):
             if symbol not in live_symbols:
-                logger.warning(f"[Sync] {symbol} not found in Broker. Closing in DB.")
-                close_position(symbol)
+                _close_broker_ghost_position(broker, pos, today)
+
+        # Refresh after ghost closes
+        db_positions = {p.symbol: p for p in load_positions(status="OPEN")}
 
         # 2. Add or Update positions found in Broker
         for lp in live_positions:
@@ -235,34 +291,6 @@ def sync_portfolio_with_broker(broker, today: date):
                 )
                 save_position(new_pos)
 
-                # Place GTT stop-loss for newly synced position (cancel-first to avoid duplicates)
-                try:
-                    from broker.base import OrderRequest, OrderSide, OrderType, OrderStatus
-                    from portfolio.manager import gtt_stop_limit_price, cancel_stale_gtts, _alert_naked_stop
-                    if not cancel_stale_gtts(broker, lp.symbol, "broker-sync new position"):
-                        # Unverified cancel — don't risk a duplicate GTT. Alert instead;
-                        # there's no later in-process pass to retry this standalone script.
-                        _alert_naked_stop(lp.symbol, lp.quantity, stops["stop_loss"],
-                                          "Could not verify old GTT cancelled during broker sync")
-                    else:
-                        gtt_req = OrderRequest(
-                            symbol=lp.symbol, side=OrderSide.SELL, quantity=lp.quantity,
-                            order_type=OrderType.MARKET,
-                            price=gtt_stop_limit_price(stops["stop_loss"]),
-                            is_gtt=True, gtt_trigger_price=stops["stop_loss"],
-                        )
-                        gtt_res = broker.place_order_with_retry(gtt_req)
-                        if gtt_res.status in (OrderStatus.OPEN, OrderStatus.COMPLETE, OrderStatus.PENDING):
-                            logger.info("[Sync] GTT stop placed for %s: trigger=₹%.2f (gtt_id=%s)",
-                                        lp.symbol, stops["stop_loss"], gtt_res.order_id)
-                        else:
-                            logger.warning("[Sync] GTT FAILED for %s: %s — set stop manually",
-                                           lp.symbol, gtt_res.rejection_reason)
-                            _alert_naked_stop(lp.symbol, lp.quantity, stops["stop_loss"],
-                                              f"GTT failed during broker sync: {gtt_res.rejection_reason}")
-                except Exception as gtt_err:
-                    logger.warning("[Sync] GTT placement error for %s: %s", lp.symbol, gtt_err)
-
             else:
                 # Update share count if it changed manually
                 db_pos = db_positions[lp.symbol]
@@ -270,6 +298,10 @@ def sync_portfolio_with_broker(broker, today: date):
                     logger.info(f"[Sync] Updating {lp.symbol} shares: {db_pos.shares} -> {lp.quantity}")
                     db_pos.shares = lp.quantity
                     save_position(db_pos)
+
+        # 3. Remove legacy stop-loss GTTs — exits are signal-only
+        for pos in load_positions(status="OPEN"):
+            cancel_stale_gtts(broker, pos.symbol, "signal-only mode — legacy stop GTT cleanup")
 
     except Exception as e:
         logger.error(f"[Sync] Failed to reconcile portfolio: {e}")

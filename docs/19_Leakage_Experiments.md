@@ -8,19 +8,33 @@ passage is *necessary, not sufficient*; only forward data confirms.
 
 ---
 
-## E1 — Stranded-capital diagnosis, then ablation (RE-SCOPED 2026-07-07)
+## E1 — Stranded-capital diagnosis, then ablation (RE-SCOPED 2026-07-07, EXECUTED 2026-07-11)
 
 - **Status**: the original uniform-sizing arm was RUN and produced a null — `SCORE_BUCKETS` is
   dead code (never called in engine or live manager; gate run bit-identical to baseline). The
   measured leak (slots full 90.2% of BULL days, exposure only 71.6%) is real but its mechanism is
   now unattributed.
-- **Re-scoped step 1 (measurement)**: instrument one baseline run to log, per buy, the drawdown
-  throttle tier applied, and per day, undeployed cash attributable to (a) DD throttles at entry,
-  (b) `cash/available_slots` splitting when candidates < free slots, (c) other. Zero risk.
-- **Re-scoped step 2 (ablation)**: whichever mechanism dominates gets ONE single-variable
-  ablation through the full gate (e.g., DD-throttle removal arm, or denominator
-  `available_slots → num_to_buy` arm). Note the rejected-experiments list (docs/05) already
-  covers *adding* throttles; *removing* an existing throttle is untested territory.
+- **Re-scoped step 1 (measurement, executed)**: instrumented one N=3 baseline run
+  (2022-01-01→2026-07-11) logging drawdown-throttle tier and slot/candidate counts on every
+  buy-decision day (n=167). Result: the two candidate mechanisms are **near-parity, not one
+  dominant** — DD-throttle leak ≈ ₹1.09M summed, candidate/slot-shortfall leak ≈ ₹1.01M summed
+  (ratio 0.93x), firing on 19.8% vs ~9% of buy-decision days respectively.
+- **Re-scoped step 2a (denominator ablation, executed)**: `available_slots → num_to_buy` arm
+  tested — **structural no-op**. `MAX_STOCK_ALLOCATION_PCT=0.34` (`config/settings.py:58`,
+  explicitly sized for "full deployment over 3 positions") clips any bigger per-slot allocation
+  straight back down; gate run was byte-identical to baseline on every metric. Code reverted, no
+  trace left.
+- **Re-scoped step 2b (DD-throttle-removal ablation, executed)**: `DD_THROTTLE_DISABLED_ENABLED`
+  flag (off-by-default, `backtest/engine.py`) skips the 0.50x/0.25x size reduction entirely.
+  **PASSED** the full gate: TRAIN CAGR +13.44%→+17.98% (Sharpe 0.73→0.86, MDD 18.94%→18.20%),
+  TEST CAGR +11.00%→+12.44% (Sharpe 0.64→0.71), FULL CAGR +11.29%→+14.88% (Sharpe 0.63→0.76).
+  `crash_v_recovery`/`extended_bear_grind`/`gap_down_bleed` stress scenarios byte-identical
+  (DD threshold never crossed in those windows); `prolonged_sideways_chop` degrades
+  (-24.77%→-28.66%, PF 0.49→0.46) but no sign flip, so it does not trip the hard-fail rule.
+  Kept in code, off by default — pending a deploy decision since it removes a deliberate
+  risk-management control. See [[e1_idle_cash_ablation_20260711]].
+- Note the rejected-experiments list (docs/05) already covers *adding* throttles; *removing* an
+  existing throttle was untested territory before this run.
 - **Hypothesis (updated)**: deploying the measured ~27% idle capital recovers 1.5–3pp CAGR.
 - **Economic rationale**: the permutation test prices the signal at ~+9.6pp/yr on deployed
   capital; capital not deployed against the signal earns 0%. Conviction tiering only pays if the

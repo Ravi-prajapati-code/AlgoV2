@@ -19,6 +19,9 @@ from strategy.defensive_portfolio import (
     REGIME_SWITCH_DAYS, BULL_RECOVERY_DAYS, REBAL_DAYS, MIN_DEFENSIVE_HOLD_DAYS,
     BEAR_SWING_RS_THRESHOLD, BEAR_SWING_SLOTS, BEAR_SWING_COOLDOWN_DAYS, ENTRY_CONFIRM_DAYS,
     is_defensive_symbol, get_defensive_entries, compute_rebalance, GOLD_ETF,
+    ROTATION_ENABLED, ROTATE_EXIT_RS, ROTATE_INTO_RS, ROTATE_MIN_GAP,
+    RIDE_WINNER_ENABLED, RIDE_WINNER_GAP_PCT,
+    SCORE_DROP_EXIT_ENABLED, SCORE_DROP_DAYS, is_score_declining,
 )
 
 # Nifty pullback guard: pause new BULL entries when Nifty drops >X% from 10-day high
@@ -43,6 +46,7 @@ from config.settings import (
     GOLDBEES_PROFIT_EXIT_ONLY, GOLDBEES_MAX_LOSS_PCT,
     NEXT_DAY_CLOSE_FILL_ENABLED, REGIME_SMOOTHING_ENABLED,
     REPLACE_MIN_NEW_RS, REPLACE_MAX_HELD_RS, REPLACE_MIN_GAP, MIN_PROFIT_SOFT,
+    DD_THROTTLE_DISABLED_ENABLED,
 )
 
 logger = logging.getLogger(__name__)
@@ -94,6 +98,7 @@ class BacktestEngine:
         last_rebal_date: Optional[date] = None
         defensive_start_date: Optional[date] = None
         bear_swing_exit_dates: Dict[str, date] = {}  # cooldown tracker: symbol → last exit date
+        score_history: Dict[str, list] = {}  # symbol → last 9 days' composite_rank (ROTATION/RIDE_WINNER/SCORE_DROP_EXIT)
 
         all_dates = self._get_trading_dates()
         if not all_dates:
@@ -348,6 +353,15 @@ class BacktestEngine:
                             pos, cp, rs, indicators=ind
                         )
                         if not exit_triggered:
+                            ema50 = ind.get("ema_50", 0)
+                            if ema50 > 0 and cp < ema50:
+                                pos.days_below_ema50 += 1
+                                if pos.days_below_ema50 >= 2:
+                                    exit_triggered = True
+                                    exit_reason = "TREND_BREAK (Price < 50 EMA x2 days)"
+                            else:
+                                pos.days_below_ema50 = 0
+                        if not exit_triggered:
                             continue
                         ep = self._lagged_fill_price(pos.symbol, i, all_dates, cp, "sell")
                         pnl_data = net_pnl(pos.entry_price, ep, pos.shares)
@@ -471,6 +485,139 @@ class BacktestEngine:
                             cash += ep * pos.shares - pnl["sell_charges"]["total"]
                         open_positions = []
                         held = set()
+
+                # ── A.1 Update composite score history (mirrors portfolio/manager.py) ──
+                for sym, ind in indicators.items():
+                    cr = float(ind.get("composite_rank", 0) or 0)
+                    if cr > 0:
+                        hist = score_history.get(sym, [])
+                        hist.append(cr)
+                        score_history[sym] = hist[-9:]  # keep last 9 entries
+
+                def _non_defensive(positions):
+                    return [p for p in positions
+                            if not is_defensive_symbol(p.symbol) and p.symbol != SAFE_HAVEN_SYMBOL]
+
+                def _sell_position(pos, reason):
+                    nonlocal cash, open_positions
+                    ep = self._lagged_fill_price(pos.symbol, i, all_dates, prices.get(pos.symbol, pos.entry_price), "sell")
+                    pnl = net_pnl(pos.entry_price, ep, pos.shares)
+                    result.trades.append(Trade(
+                        symbol=pos.symbol, sector=pos.sector,
+                        entry_date=pos.entry_date, exit_date=today_ts,
+                        entry_price=pos.entry_price, exit_price=ep,
+                        shares=pos.shares, gross_pnl=pnl["gross_pnl"],
+                        charges=pnl["total_charges"], net_pnl=pnl["net_pnl"],
+                        exit_reason=reason,
+                        hold_days=(today_ts - pos.entry_date).days,
+                    ))
+                    cash += ep * pos.shares - pnl["sell_charges"]["total"]
+                    open_positions = [p for p in open_positions if p.symbol != pos.symbol]
+                    result.transaction_log.append({
+                        "Time": str(today_ts), "Action": "SELL", "Stock": pos.symbol,
+                        "Price": ep, "Qty": pos.shares, "Balance": round(cash, 2),
+                        "Holdings": ", ".join([p.symbol for p in open_positions]),
+                    })
+
+                def _add_to_winner(sym, budget_cash, tag):
+                    nonlocal cash, open_positions
+                    pos = next((p for p in open_positions if p.symbol == sym), None)
+                    raw_add = prices.get(sym)
+                    if not pos or not raw_add:
+                        return
+                    pv_now = cash + portfolio_invested_value(open_positions, prices)
+                    add_price = round_to_tick(raw_add)
+                    cur_val = pos.shares * add_price
+                    max_add = max(0, pv_now * MAX_STOCK_ALLOCATION_PCT - cur_val)
+                    add_budget = min(budget_cash * (1.0 - SIZER_CASH_BUFFER_PCT), max_add)
+                    add_val = add_budget - buy_charges(add_budget).total
+                    add_shares = calculate_shares_for_value(add_val, add_price)
+                    if add_shares <= 0:
+                        return
+                    old_val = pos.shares * pos.entry_price
+                    new_val = add_shares * add_price
+                    pos.entry_price = round_to_tick((old_val + new_val) / (pos.shares + add_shares))
+                    pos.shares += add_shares
+                    cash -= (add_shares * add_price) + buy_charges(add_shares * add_price).total
+                    logger.info(f"  [{tag}] {sym:<12} +{add_shares} shares @ ₹{add_price:.2f}")
+
+                # ── A.2 Score Drop Exit: composite_rank declining N days → exit → 50/50 to others ──
+                if SCORE_DROP_EXIT_ENABLED:
+                    for pos in list(_non_defensive(open_positions)):
+                        if not is_score_declining(pos.symbol, score_history, SCORE_DROP_DAYS):
+                            continue
+                        logger.info(f"  [SCORE-DROP] {pos.symbol} RS declining {SCORE_DROP_DAYS} days — exiting")
+                        _sell_position(pos, "SCORE_DROP_EXIT")
+                        remaining = _non_defensive(open_positions)
+                        if remaining:
+                            each_cash = cash / len(remaining)
+                            for recv in remaining:
+                                recv_ind = indicators.get(recv.symbol, {})
+                                recv_ema20 = recv_ind.get("ema_20") or 0
+                                recv_price = prices.get(recv.symbol, recv.entry_price)
+                                if recv_ema20 and recv_ema20 > 0 and (recv_price - recv_ema20) / recv_ema20 > 0.05:
+                                    continue
+                                _add_to_winner(recv.symbol, each_cash, "SCORE-DROP-ADD")
+                        break  # one score-drop exit per session
+
+                # ── A.3 Ride the Winner: P&L gap >= N% → sell worst, ALL cash to best ──
+                ride_winner_fired = False
+                if RIDE_WINNER_ENABLED:
+                    non_def = _non_defensive(open_positions)
+                    if len(non_def) >= 2:
+                        def _pnl_pct(p):
+                            cp = prices.get(p.symbol, p.entry_price)
+                            return (cp - p.entry_price) / p.entry_price if p.entry_price > 0 else 0.0
+                        worst = min(non_def, key=_pnl_pct)
+                        best  = max(non_def, key=_pnl_pct)
+                        worst_pct = _pnl_pct(worst)
+                        best_pct  = _pnl_pct(best)
+                        best_price = prices.get(best.symbol, best.entry_price)
+                        best_val   = best.shares * best_price
+                        best_ind   = indicators.get(best.symbol, {})
+                        ema20      = best_ind.get("ema_20") or 0
+                        pv         = cash + portfolio_invested_value(open_positions, prices)
+                        not_extended = (not ema20 or ema20 == 0 or (best_price - ema20) / ema20 <= 0.05)
+                        has_room     = best_val < pv * MAX_STOCK_ALLOCATION_PCT
+
+                        if ((best_pct - worst_pct) >= RIDE_WINNER_GAP_PCT
+                                and has_room and not_extended
+                                and worst.symbol != best.symbol):
+                            logger.info(f"  [RIDE] {worst.symbol} {worst_pct:+.1%} → {best.symbol} {best_pct:+.1%}")
+                            _sell_position(worst, "RIDE_WINNER_OUT")
+                            _add_to_winner(best.symbol, cash, "RIDE-ADD")
+                            ride_winner_fired = True
+
+                # ── 0.5 Rotation: exit laggard → add to winner (before sell signals) ──
+                # Skip if ride-winner already acted this session.
+                if ROTATION_ENABLED and not ride_winner_fired:
+                    non_def = _non_defensive(open_positions)
+                    if len(non_def) >= 2:
+                        worst = min(non_def, key=lambda p: indicators.get(p.symbol, {}).get("composite_rank", 101))
+                        best  = max(non_def, key=lambda p: indicators.get(p.symbol, {}).get("composite_rank", 0))
+                        worst_rs = float(indicators.get(worst.symbol, {}).get("composite_rank", 101))
+                        best_rs  = float(indicators.get(best.symbol, {}).get("composite_rank", 0))
+                        best_price = prices.get(best.symbol, best.entry_price)
+                        best_val   = best.shares * best_price
+                        best_ind   = indicators.get(best.symbol, {})
+                        ema20      = best_ind.get("ema_20") or 0
+                        pv         = cash + portfolio_invested_value(open_positions, prices)
+                        not_extended = (not ema20 or ema20 == 0 or (best_price - ema20) / ema20 <= 0.05)
+                        has_room     = best_val < pv * MAX_STOCK_ALLOCATION_PCT
+
+                        if (worst_rs < ROTATE_EXIT_RS
+                                and best_rs >= ROTATE_INTO_RS
+                                and (best_rs - worst_rs) >= ROTATE_MIN_GAP
+                                and has_room and not_extended
+                                and worst.symbol != best.symbol):
+                            logger.info(f"  [ROTATE] {worst.symbol} RS={worst_rs:.0f} → {best.symbol} RS={best_rs:.0f}")
+                            _sell_position(worst, "ROTATE_OUT")
+                            _add_to_winner(best.symbol, cash, "ROTATE-ADD")
+
+                held = {pos.symbol for pos in open_positions}
+                portfolio_val = cash + portfolio_invested_value(open_positions, prices)
+                peak_value = max(peak_value, portfolio_val)
+
                 idx_confirmed = idx_confirmed_by_time.get(exec_time, {}).get(today_date, True)
                 nifty_pb_ok = nifty_pullback_ok_by_time.get(exec_time, {}).get(today_date, True)
                 num_to_buy = 0
@@ -610,15 +757,24 @@ class BacktestEngine:
                         spendable = cash * (1.0 - SIZER_CASH_BUFFER_PCT)
                         base_slot_cash = spendable / available_slots
                         # Graduated size reduction under drawdown
-                        if current_dd >= DRAWDOWN_REDUCE_SIZE_PCT * DRAWDOWN_REDUCE_TIER2_MULT:
-                            base_slot_cash *= 0.25
-                        elif current_dd >= DRAWDOWN_REDUCE_SIZE_PCT:
-                            base_slot_cash *= 0.50
+                        if not DD_THROTTLE_DISABLED_ENABLED:
+                            if current_dd >= DRAWDOWN_REDUCE_SIZE_PCT * DRAWDOWN_REDUCE_TIER2_MULT:
+                                base_slot_cash *= 0.25
+                            elif current_dd >= DRAWDOWN_REDUCE_SIZE_PCT:
+                                base_slot_cash *= 0.50
                         for j in range(num_to_buy):
                             if new_trades_today >= MAX_NEW_TRADES_PER_DAY:
                                 logger.info(f"  [SKIP] Daily trade limit reached ({MAX_NEW_TRADES_PER_DAY})")
                                 break
                             sig = buy_signals[j]
+
+                            # Skip if RS/composite rank has been falling for N consecutive
+                            # days (mirrors portfolio/manager.py's buy-side SCORE_DROP_EXIT check)
+                            if (SCORE_DROP_EXIT_ENABLED
+                                    and is_score_declining(sig.symbol, score_history, SCORE_DROP_DAYS)):
+                                logger.info(f"  [SKIP_BUY] {sig.symbol} RS declining {SCORE_DROP_DAYS} days — skip")
+                                continue
+
                             exec_price = self._lagged_fill_price(sig.symbol, i, all_dates, sig.price, "buy")
                             exec_date = today_ts
 
@@ -896,6 +1052,21 @@ class BacktestEngine:
                         "adx": round(float(adx_s.loc[dt]) if not pd.isna(adx_s.loc[dt]) else 0.0, 1),
                         "st_direction": int(st_dir_s.loc[dt]) if not pd.isna(st_dir_s.loc[dt]) else -1,
                     }
+
+        # 4. Composite rank (RS rank x ATR%), cross-sectional percentile per day —
+        # mirrors strategy/relative_strength.py's compute_rs_for_all(). Needed by
+        # ROTATION/RIDE_WINNER/SCORE_DROP_EXIT, which key off composite_rank in live
+        # (docs/28_Software_Truth_Audit.md, docs/29_Project_Governance.md Rule 1).
+        for ts, symbol_indicators in all_indicators.items():
+            scores = {
+                sym: ind["rs_rank"] * ind["atr_pct"]
+                for sym, ind in symbol_indicators.items()
+            }
+            if not scores:
+                continue
+            ranked = pd.Series(scores).rank(pct=True) * 100
+            for sym, cr in ranked.items():
+                symbol_indicators[sym]["composite_rank"] = float(cr)
 
         return all_indicators, idx_confirmed_by_time, nifty_pullback_ok_by_time
 

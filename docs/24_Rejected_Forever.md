@@ -22,8 +22,14 @@ robustness-gate run and re-litigates a closed question.
 | Extension ranking | REJECTED — null | Same suite. |
 | Weighted composite scores | REJECTED — never beat plain RS-rank | `entry_attribution_suite_20260709`: REVERSE_RS (worst-first) beat RS-rank ranking; ranking itself adds no value at the point of entry. |
 | Sector blacklist (`SECTOR_BLACKLIST`) | REJECTED — overfit | §XXIII, Experiment A. Code deleted 2026-07-10, commit `54afde3`. |
-| Streak-priority buy ordering (`STREAK_PRIORITY_ENABLED`) | NOT DEPLOYED — ambiguous, not proven | §XXIII, Experiment B. Mechanical PASS but train regresses while test improves — a genuine trade-off, not a clean win. Code deleted 2026-07-10 alongside the sector blacklist (never reached "proven," so didn't meet the bar to keep either). If revisited, this is the one item here that isn't a hard reject — it's an open judgment call that was resolved by *not* shipping it, not by disproving it. |
+| Streak-priority buy ordering (`STREAK_PRIORITY_ENABLED` / re-tested as `STREAK_POSITION_PREF_ENABLED`) | REJECTED — crash_v_recovery fails | §XXIII, Experiment B (pre-fidelity-fix, ambiguous: train regressed, test improved). Re-tested 2026-07-10 under the corrected post-df9856f engine with a continuous streak-day sort — this time TRAIN/TEST/FULL all clearly improved (no more ambiguity), but `crash_v_recovery` CAGR flipped +4.66%→-4.32%, same hard-fail rule that killed extension-filter and the liquidity-tightening candidate. Code reverted, no trace left in `config/settings.py`. Untested variant: gating the preference off during BEAR/just-flipped-BULL regime. |
 | Dynamic replacement (RS/volume/sector rotation triggers for replacing a weak holding) | REJECTED — no live trigger works | [[rotation_logic_synthesis_20260710]]: replacing a weak holding is correct in hindsight, but RS-rank, volume, and sector strength all fail as a real-time trigger. Built, tested, and explained — not an open question. |
+
+## Exit
+
+| Lever | Verdict | Evidence |
+|---|---|---|
+| Momentum-decay RSI threshold (`MOMENTUM_RSI`, live=50) | REJECTED — structural, two-sided local optimum | 7-value sweep (35/38/40/42/45/55/60) via `robustness_gate.py`, 2026-07-11. Lowering (35-42) improves TRAIN/TEST/`crash_v_recovery` but is killed by `gap_down_bleed` PF drop every time (38 and 40 are single-failure near-misses, nothing else wrong). Raising (45-60) fails via the opposite mechanism — TEST-window degrades, `prolonged_sideways_chop` breaks, and 60 flips `crash_v_recovery` CAGR negative. 50 is a genuine local optimum, not an arbitrary default. `gap_down_bleed` is the first recurring-killer scenario found for an *exit-timing* lever, distinct from `crash_v_recovery` (the recurring killer for ranking/filtering levers, `docs/25` §4). See `docs/27_Trading_Strategy_Research_Framework.md` §A2. |
 
 ## Universe
 
@@ -40,7 +46,15 @@ robustness-gate run and re-litigates a closed question.
   model, not a proven backtest edge). See §XXIV / §XXVII.
 - Exit chain: trend break, momentum decay, regime-flip bear protection.
   No complex-exit variant has ever beaten this. Frozen.
-- Drawdown-based position sizing, regime filter. Justified, keep.
+- Regime filter. Justified, keep.
+- Drawdown-based position sizing (`DRAWDOWN_REDUCE_SIZE_PCT`/`TIER2_MULT`) —
+  **superseded 2026-07-11**: E1 ablation (`DD_THROTTLE_DISABLED_ENABLED`,
+  off-by-default) removes it entirely and **PASSED** the full robustness
+  gate — CAGR/Sharpe/MDD all improve on TRAIN/TEST/FULL, `crash_v_recovery`
+  untouched (byte-identical), only `prolonged_sideways_chop` degrades
+  (-24.77%→-28.66%, no sign flip). This is not "rejected," it's a live
+  candidate pending a deploy decision — see [[e1_idle_cash_ablation_20260711]]
+  and `docs/26_Portfolio_Truth_Audit.md`.
 
 ## How to apply
 
