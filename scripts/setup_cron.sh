@@ -7,6 +7,7 @@
 #   09:20 IST Mon-Fri  — Position reconciler (DB vs Upstox)
 #   09:22 IST Mon-Fri  — GTT price-consistency audit (DB stop vs broker GTT trigger)
 #   09:25 IST Mon-Fri  — Morning P&L summary via Telegram
+#   15:35 IST Mon-Fri  — Cron integrity check: alert on duplicate/unguarded run entries
 #   15:40 IST Mon-Fri  — GTT coverage audit: alert on any naked (unprotected) position
 #   15:45 IST Mon-Fri  — Run paper/live daily strategy after market close
 #   15:52 IST Mon-Fri  — Forward shadow ledger (Q3 #1: append-only RS cross-section)
@@ -24,11 +25,17 @@ mkdir -p "$LOG_DIR"
 
 # ── Detect live vs paper mode ──────────────────────────────────────────────
 MODE="${1:-paper}"   # pass "live" as first arg to enable live trading cron
+LOCK_FILE="/tmp/algo_daily_run.lock"
+# flock -n: any second invocation of the daily run (duplicate cron entry,
+# manual re-run, retry after a hang) exits immediately instead of trading
+# twice concurrently. Wraps the command itself, not just this install script,
+# so it protects against drift even if a future duplicate entry is added
+# outside setup_cron.sh.
 if [[ "$MODE" == "live" ]]; then
-    RUN_CMD="$PYTHON $ALGO_DIR/main.py run --live"
+    RUN_CMD="flock -n $LOCK_FILE $PYTHON $ALGO_DIR/main.py run --live"
     MODE_LABEL="LIVE"
 else
-    RUN_CMD="$PYTHON $ALGO_DIR/main.py run"
+    RUN_CMD="flock -n $LOCK_FILE $PYTHON $ALGO_DIR/main.py run"
     MODE_LABEL="PAPER"
 fi
 
@@ -68,6 +75,11 @@ RUNNER_CRON="45 15 * * 1-5 cd $ALGO_DIR && $RUN_CMD >> $LOG_DIR/daily_run_\$(dat
 #     just before the daily runner. Schedule per monitoring/gtt_coverage.py's own docstring.
 GTT_COVERAGE_CRON="40 15 * * 1-5 cd $ALGO_DIR && $PYTHON $ALGO_DIR/monitoring/gtt_coverage.py >> $LOG_DIR/gtt_coverage.log 2>&1"
 
+# 4d. Cron integrity check (3:35 PM IST): alert on duplicate/unmarked "main.py run"
+#     entries or unguarded live entries before the daily runner fires. Reads raw
+#     crontab, not just AlgoTrading-marked lines, so it catches manual drift too.
+CRON_INTEGRITY_CRON="35 15 * * 1-5 cd $ALGO_DIR && $PYTHON $ALGO_DIR/scripts/cron_integrity_check.py >> $LOG_DIR/cron_integrity.log 2>&1"
+
 # 5b. Forward shadow ledger (3:52 PM IST): append-only RS cross-section for Q3 #1
 SHADOW_LEDGER_CRON="52 15 * * 1-5 cd $ALGO_DIR && $PYTHON $ALGO_DIR/scripts/shadow_ledger.py >> $LOG_DIR/shadow_ledger.log 2>&1"
 
@@ -92,7 +104,7 @@ MARKER="# AlgoTrading"
 # Get existing crontab minus old Algo lines (ignore errors if no crontab yet)
 EXISTING=$(crontab -l 2>/dev/null | grep -v "$MARKER" || true)
 
-printf '%s\n%s\n%s\n%s\n%s\n%s\n%s\n%s\n%s\n%s\n%s\n%s\n%s\n' \
+printf '%s\n%s\n%s\n%s\n%s\n%s\n%s\n%s\n%s\n%s\n%s\n%s\n%s\n%s\n' \
   "$EXISTING" \
   "$AUTO_TOKEN_CRON  $MARKER:auto_token" \
   "$REMINDER_CRON    $MARKER:token_reminder" \
@@ -100,6 +112,7 @@ printf '%s\n%s\n%s\n%s\n%s\n%s\n%s\n%s\n%s\n%s\n%s\n%s\n%s\n' \
   "$GTT_AUDIT_CRON   $MARKER:gtt_price_audit" \
   "$PNL_CRON         $MARKER:pnl_summary" \
   "$GTT_COVERAGE_CRON $MARKER:gtt_coverage" \
+  "$CRON_INTEGRITY_CRON $MARKER:cron_integrity" \
   "$RUNNER_CRON      $MARKER:daily_run" \
   "$SHADOW_LEDGER_CRON $MARKER:shadow_ledger" \
   "$HEALTH_CRON      $MARKER:health_check" \
