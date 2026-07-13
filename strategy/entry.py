@@ -3,7 +3,7 @@ from config.settings import (
     VOLUME_SPIKE_MULTIPLIER, RS_THRESHOLD,
     TREND_GATE_200_ENABLED, ADX_TREND_THRESHOLD,
     EXTENSION_CAP_PCT, BREAKOUT_PCT, ENTRY_MODE,
-    MIN_DAILY_TURNOVER,
+    MIN_DAILY_TURNOVER, ENTRY_EMA_MEDIUM, ENTRY_EMA_LONG,
 )
 
 def check_entry(
@@ -16,6 +16,12 @@ def check_entry(
     rs_rank = float(ind.get("rs_rank", 0) or 0)
     ema_50 = float(ind.get("ema_50", 0))
     ema_100 = float(ind.get("ema_100", 0))
+    # Trend-alignment gate periods are separately configurable (docs/31 sweep) —
+    # default keys match ema_50/ema_100 exactly when ENTRY_EMA_MEDIUM/LONG are
+    # at their defaults (50/100), falling back to the fixed values above if the
+    # generic keys aren't present (e.g. a caller passing a partial indicators dict).
+    ema_entry_med = float(ind.get("ema_entry_med", ema_50) or ema_50)
+    ema_entry_long = float(ind.get("ema_entry_long", ema_100) or ema_100)
     high_20d = float(ind.get("high_20d", 0))
 
     # Entry Attribution Suite (docs/23_Assumption_Audit.md §XIV): FULL mode skips
@@ -67,7 +73,7 @@ def check_entry(
         adx = float(ind.get("adx", 0))
         st_dir = ind.get("st_direction", -1)
 
-        if not (close > ema_50 and ema_50 > ema_100):
+        if not (close > ema_entry_med and ema_entry_med > ema_entry_long):
             return False, "Weak Trend (Price or EMAs not aligned)"
 
         if st_dir not in (1, "up"):

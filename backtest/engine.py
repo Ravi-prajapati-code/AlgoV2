@@ -48,6 +48,7 @@ from config.settings import (
     REPLACE_MIN_NEW_RS, REPLACE_MAX_HELD_RS, REPLACE_MIN_GAP, MIN_PROFIT_SOFT,
     DD_THROTTLE_DISABLED_ENABLED,
     SECTOR_DURABILITY_WEIGHT, SECTOR_DURABILITY_LOOKBACK_DAYS, SECTOR_DURABILITY_MIN_TRADES,
+    ENTRY_EMA_MEDIUM, ENTRY_EMA_LONG, EXIT_TREND_EMA,
 )
 
 logger = logging.getLogger(__name__)
@@ -1029,6 +1030,16 @@ class BacktestEngine:
                 ema50 = close.ewm(span=50, adjust=False).mean()
                 ema100 = close.ewm(span=100, adjust=False).mean()
                 ema150 = close.ewm(span=150, adjust=False).mean()
+
+                # Sweepable entry/exit EMA periods (docs/31) — reuse a fixed
+                # series above when the configured period matches (the common
+                # case at defaults), else compute fresh.
+                _period_series = {20: ema20, 50: ema50, 100: ema100, 150: ema150}
+                def _ema_series(period: int):
+                    return _period_series.get(period, close.ewm(span=period, adjust=False).mean())
+                ema_entry_med  = _ema_series(ENTRY_EMA_MEDIUM)
+                ema_entry_long = _ema_series(ENTRY_EMA_LONG)
+                ema_exit_trend = _ema_series(EXIT_TREND_EMA)
                 
                 # ATR
                 tr = pd.concat([df['high'] - df['low'], (df['high'] - close.shift()).abs(), (df['low'] - close.shift()).abs()], axis=1).max(axis=1)
@@ -1083,6 +1094,8 @@ class BacktestEngine:
                         "symbol": symbol, "close": last_close,
                         "ema_20": ema20.loc[dt], "ema_50": ema50.loc[dt],
                         "ema_100": ema100.loc[dt], "ema_150": ema150.loc[dt],
+                        "ema_entry_med": ema_entry_med.loc[dt], "ema_entry_long": ema_entry_long.loc[dt],
+                        "ema_exit_trend": ema_exit_trend.loc[dt],
                         "atr": last_atr,
                         "atr_pct": (last_atr / last_close * 100) if last_close > 0 else 0,
                         "rsi": rsi.loc[dt], "turnover": turnover.loc[dt],
