@@ -37,6 +37,12 @@ robustness-gate run and re-litigates a closed question.
 |---|---|---|
 | Tightening the liquidity/turnover floor (`MIN_DAILY_TURNOVER`) above the current dormant ₹2 Cr/day | REJECTED — structural, not a calibration issue | Tested at p25 (₹118 Cr/day) and p10 (₹66.55 Cr/day) of the current universe's turnover distribution via `robustness_gate.py`. Both REJECT on the same failure: `crash_v_recovery` stress CAGR flips negative (+4.66%→-0.85%/-0.95%). Full-window and train-window CAGR/Sharpe drop meaningfully at both levels; test-window is non-monotonic (p25 ~neutral, p10 *worse* despite being milder) — evidence the effect is driven by which specific stock gets filtered (the crash-recovery winner is liquidity-thin), not the threshold level. Two other stress scenarios (extended_bear_grind, gap_down_bleed) were completely inert at both thresholds — the filtered names never mattered there either way. One real positive found: `prolonged_sideways_chop` improves at both levels (PF 0.68→0.84 at p25), a believable "avoid whipsaw in illiquid names" mechanism — but not enough to offset the crash_v_recovery failure under the standard applied all session. 2026-07-10. |
 
+## Safe-haven (GOLDBEES)
+
+| Lever | Verdict | Evidence |
+|---|---|---|
+| Gate the BEAR-regime GOLDBEES buy on gold's own trend (`GOLDBEES_TREND_FILTER_ENABLED`, close > own EMA100) instead of buying unconditionally on BEAR flip | REJECTED — no-op where it doesn't bite, net-negative where it does | `robustness_gate.py`, 2026-07-13. TEST window byte-identical to baseline (filter never once blocked an entry — gold was already trending up every time BEAR hit). 3 of 4 stress scenarios byte-identical (`crash_v_recovery`, `extended_bear_grind`, `gap_down_bleed`). The two places it had any effect were both worse: TRAIN CAGR 22.06%→20.89%, Sharpe 1.11→1.06; `prolonged_sideways_chop` CAGR -9.44%→-14.72%, PF 0.86→0.81. Gate mechanically PASSED (no sign-flip, no OOS regression) but judgment-call rejected — same pattern as sector-blacklist/streak-priority: clears the hard thresholds without earning the complexity. Code fully reverted, no trace left. Do not re-test the same EMA100-trend formulation; a materially different gold-timing signal would be a new hypothesis, not a re-run. |
+
 ## What is NOT on this list (proven, keep)
 
 - Relative Strength gate, Trend Alignment (EMA), SuperTrend, ADX
