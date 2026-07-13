@@ -48,6 +48,7 @@ from config.settings import (
     REPLACE_MIN_NEW_RS, REPLACE_MAX_HELD_RS, REPLACE_MIN_GAP, MIN_PROFIT_SOFT,
     DD_THROTTLE_DISABLED_ENABLED,
     SECTOR_DURABILITY_WEIGHT, SECTOR_DURABILITY_LOOKBACK_DAYS, SECTOR_DURABILITY_MIN_TRADES,
+    STREAK_POSITION_PREF_ENABLED,
 )
 
 logger = logging.getLogger(__name__)
@@ -130,6 +131,7 @@ class BacktestEngine:
         defensive_start_date: Optional[date] = None
         bear_swing_exit_dates: Dict[str, date] = {}  # cooldown tracker: symbol → last exit date
         score_history: Dict[str, list] = {}  # symbol → last 9 days' composite_rank (ROTATION/RIDE_WINNER/SCORE_DROP_EXIT)
+        qualifying_streak: Dict[str, int] = {}  # symbol → consecutive days in today's qualified-BUY pool (STREAK_POSITION_PREF_ENABLED)
 
         all_dates = self._get_trading_dates()
         if not all_dates:
@@ -717,7 +719,21 @@ class BacktestEngine:
                 portfolio_val = cash + portfolio_invested_value(open_positions, prices)
 
                 # ── 7. Execute Buys ──────────────────────────────────────
-                buy_signals = sorted([s for s in signals if s.action == "BUY"], key=lambda x: x.score, reverse=True)
+                buy_pool = [s for s in signals if s.action == "BUY"]
+                if STREAK_POSITION_PREF_ENABLED:
+                    buy_pool_symbols = {s.symbol for s in buy_pool}
+                    for sym in buy_pool_symbols:
+                        qualifying_streak[sym] = qualifying_streak.get(sym, 0) + 1
+                    for sym in list(qualifying_streak):
+                        if sym not in buy_pool_symbols:
+                            del qualifying_streak[sym]
+                    streak_pref_active = regime == "BULL" and regime_streak >= ENTRY_CONFIRM_DAYS
+                else:
+                    streak_pref_active = False
+                if streak_pref_active:
+                    buy_signals = sorted(buy_pool, key=lambda x: (qualifying_streak.get(x.symbol, 1), -x.score))
+                else:
+                    buy_signals = sorted(buy_pool, key=lambda x: x.score, reverse=True)
                 available_slots = MAX_OPEN_POSITIONS - len(open_positions)
 
                 current_dd = (peak_value - portfolio_val) / peak_value if peak_value > 0 else 0.0
