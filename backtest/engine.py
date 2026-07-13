@@ -6,7 +6,7 @@ Optimized for speed while supporting intraday execution times.
 
 import logging
 import os
-from datetime import date, datetime
+from datetime import date, datetime, timedelta
 from typing import List, Dict, Optional
 
 import pandas as pd
@@ -47,9 +47,40 @@ from config.settings import (
     NEXT_DAY_CLOSE_FILL_ENABLED, REGIME_SMOOTHING_ENABLED,
     REPLACE_MIN_NEW_RS, REPLACE_MAX_HELD_RS, REPLACE_MIN_GAP, MIN_PROFIT_SOFT,
     DD_THROTTLE_DISABLED_ENABLED,
+    SECTOR_DURABILITY_WEIGHT, SECTOR_DURABILITY_LOOKBACK_DAYS, SECTOR_DURABILITY_MIN_TRADES,
 )
 
 logger = logging.getLogger(__name__)
+
+
+def _compute_sector_durability(trades: List[Trade], as_of: date) -> Dict[str, float]:
+    """
+    Rolling, causal per-sector mean trade return% over the trailing
+    SECTOR_DURABILITY_LOOKBACK_DAYS, using only trades closed strictly before
+    `as_of`. Unlike the rejected SECTOR_BLACKLIST (a static list derived from
+    the full backtest sample), this never sees data past the current day, so
+    it can't hardcode hindsight the way the blacklist did.
+    """
+    from collections import defaultdict
+    if not SECTOR_DURABILITY_WEIGHT:
+        return {}
+    window_start = as_of - timedelta(days=SECTOR_DURABILITY_LOOKBACK_DAYS)
+    sums: Dict[str, float] = defaultdict(float)
+    counts: Dict[str, int] = defaultdict(int)
+    for t in trades:
+        if t.exit_date is None or not (window_start <= t.exit_date < as_of):
+            continue
+        if t.net_pnl is None or not t.entry_price or not t.shares:
+            continue
+        ret_pct = t.net_pnl / (t.entry_price * t.shares) * 100.0
+        sums[t.sector] += ret_pct
+        counts[t.sector] += 1
+    return {
+        sector: sums[sector] / counts[sector]
+        for sector in sums
+        if counts[sector] >= SECTOR_DURABILITY_MIN_TRADES
+    }
+
 
 class BacktestResult:
     def __init__(self):
@@ -623,12 +654,14 @@ class BacktestEngine:
                 num_to_buy = 0
 
                 # ── 4. Signal Generation ──────────────────────────────────
+                sector_durability = _compute_sector_durability(result.trades, today_date)
                 signals, _ = generate_signals(
                     today_date, indicators, open_positions, held,
                     market_bullish=market_bullish, regime=regime,
                     portfolio_value=portfolio_val, cash=cash,
                     initial_capital=self.initial_capital,
-                    index_confirming=idx_confirmed and entry_confirmed and nifty_pb_ok
+                    index_confirming=idx_confirmed and entry_confirmed and nifty_pb_ok,
+                    sector_durability=sector_durability
                 )
 
                 # ── 6. Execute Sells ──────────────────────────────────────

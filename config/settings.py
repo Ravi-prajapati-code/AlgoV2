@@ -114,6 +114,14 @@ DD_THROTTLE_DISABLED_ENABLED = os.getenv("DD_THROTTLE_DISABLED", "false").lower(
 # entry gate creates edge. FULL = live behavior, unchanged. Test-only, live unaffected.
 ENTRY_MODE      = os.getenv("ENTRY_MODE", "FULL")
 
+# Sector durability soft score (docs/25_Path_To_Consistent_Profit.md §5) — adds a rolling,
+# causal per-sector trailing-trade-return nudge to entry score. Off by default (weight=0).
+# Distinct from the rejected SECTOR_BLACKLIST (static, full-sample, hard exclusion): this is
+# continuous, trailing-window-only, no lookahead. Test-only, live unaffected while weight=0.
+SECTOR_DURABILITY_WEIGHT        = float(os.getenv("SECTOR_DURABILITY_WEIGHT", "0"))
+SECTOR_DURABILITY_LOOKBACK_DAYS = int(os.getenv("SECTOR_DURABILITY_LOOKBACK_DAYS", "180"))
+SECTOR_DURABILITY_MIN_TRADES    = int(os.getenv("SECTOR_DURABILITY_MIN_TRADES", "5"))
+
 # Rank replacement (backtest/engine.py "Execute Buys"): evict the weakest-RS held
 # position for a much stronger waiting candidate when the portfolio is full.
 # docs/23_Assumption_Audit.md §XVIII — fired 0 times in 266 real trades because

@@ -7,7 +7,7 @@ from db.models import Signal, Position
 from strategy.entry import check_entry
 from strategy.exit import check_exit_conditions, initial_stops
 from data.universe import get_sector
-from config.settings import IGNORE_SYMBOLS, BLOCKED_SECTORS, SAFE_HAVEN_SYMBOL, SAFE_HAVEN_ENABLED, GOLDBEES_PROFIT_EXIT_ONLY, GOLDBEES_MAX_LOSS_PCT, ENTRY_MODE, ENTRY_MODE_SEED
+from config.settings import IGNORE_SYMBOLS, BLOCKED_SECTORS, SAFE_HAVEN_SYMBOL, SAFE_HAVEN_ENABLED, GOLDBEES_PROFIT_EXIT_ONLY, GOLDBEES_MAX_LOSS_PCT, ENTRY_MODE, ENTRY_MODE_SEED, SECTOR_DURABILITY_WEIGHT
 from strategy.defensive_portfolio import MIN_GOLDBEES_HOLD_DAYS
 
 logger = logging.getLogger(__name__)
@@ -24,7 +24,8 @@ def generate_signals(
     portfolio_value: float = 100000.0,
     cash: float = 100000.0,
     initial_capital: float = 100000.0,
-    index_confirming: bool = True
+    index_confirming: bool = True,
+    sector_durability: dict = None
 ) -> Tuple[List[Signal], List[Position]]:
     
     signals = []
@@ -168,6 +169,8 @@ def generate_signals(
                 score = ind.get('adx', 0)
             else:  # FULL, PURE_RS, SHUFFLE_RS
                 score = check_ind.get('rs_rank', 0)
+            if SECTOR_DURABILITY_WEIGHT and sector_durability:
+                score += SECTOR_DURABILITY_WEIGHT * sector_durability.get(get_sector(symbol), 0.0)
             candidates.append({
                 "symbol": symbol,
                 "rs_rank": score,

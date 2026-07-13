@@ -60,8 +60,8 @@ class TestAllocator:
         assert "already" in reason.lower()
 
     def test_rejects_over_stock_cap(self):
-        # Trade value = ₹20,000 on ₹75,000 portfolio = 26.7% > 25% cap
-        ok, reason = can_open_position("INFY.NS", 20_000, 75_000, [], {})
+        # Trade value = ₹30,000 on ₹75,000 portfolio = 40% > MAX_STOCK_ALLOCATION_PCT (34%)
+        ok, reason = can_open_position("INFY.NS", 30_000, 75_000, [], {})
         assert ok is False
 
     def test_rejects_over_sector_cap(self):
@@ -92,8 +92,8 @@ class TestRiskControls:
         assert "limit" in reason.lower()
 
     def test_max_positions_reached(self):
-        # With 4 positions, should reject 5th
-        positions = [_pos(f"STOCK{i}.NS", "IT") for i in range(4)]
+        # With MAX_OPEN_POSITIONS=5 positions, should reject the 6th
+        positions = [_pos(f"STOCK{i}.NS", "IT") for i in range(5)]
         ok, reason = can_open_new_trades(0, positions, 75_000, 75_000)
         assert ok is False
         assert "Max open positions" in reason
