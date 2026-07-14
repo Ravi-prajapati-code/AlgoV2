@@ -18,5 +18,6 @@ db/backups/
 .claude/
 .codex/
 .agents/
+.idea/
 
 V2algo.zip

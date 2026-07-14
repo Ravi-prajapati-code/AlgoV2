@@ -1036,26 +1036,29 @@ class BacktestEngine:
                 ema_entry_long = _ema_series(ENTRY_EMA_LONG)
                 ema_exit_trend = _ema_series(EXIT_TREND_EMA)
                 
-                # ATR
+                # ATR — Wilder's EMA, matches indicators/composite.py's live atr
+                # (docs/33: was a plain rolling mean here, silently different
+                # formula from live despite the same field name/downstream use).
                 tr = pd.concat([df['high'] - df['low'], (df['high'] - close.shift()).abs(), (df['low'] - close.shift()).abs()], axis=1).max(axis=1)
-                atr = tr.rolling(window=14).mean()
+                atr14 = tr.ewm(alpha=1/14, adjust=False).mean()
+                atr = atr14
 
                 # ADX (Wilder's — trend strength; <20 = sideways/chop)
                 h_diff   = df['high'] - df['high'].shift(1)
                 l_diff   = df['low'].shift(1) - df['low']
                 plus_dm  = pd.Series(np.where((h_diff > l_diff) & (h_diff > 0), h_diff, 0.0), index=df.index)
                 minus_dm = pd.Series(np.where((l_diff > h_diff) & (l_diff > 0), l_diff, 0.0), index=df.index)
-                atr14    = tr.ewm(alpha=1/14, adjust=False).mean()
                 plus_di  = 100 * plus_dm.ewm(alpha=1/14, adjust=False).mean() / atr14.replace(0, np.nan)
                 minus_di = 100 * minus_dm.ewm(alpha=1/14, adjust=False).mean() / atr14.replace(0, np.nan)
                 dx       = 100 * (plus_di - minus_di).abs() / (plus_di + minus_di).replace(0, np.nan)
                 adx_s    = dx.ewm(alpha=1/14, adjust=False).mean()
                 st_dir_s = compute_supertrend(df)["direction"]
-                
-                # RSI
+
+                # RSI — Wilder's EMA of gains/losses, matches indicators/composite.py's
+                # live rsi (docs/33: was a plain rolling mean here, same bug class as atr).
                 delta = close.diff()
-                gain = (delta.where(delta > 0, 0)).rolling(window=14).mean()
-                loss = (-delta.where(delta < 0, 0)).rolling(window=14).mean()
+                gain = (delta.where(delta > 0, 0)).ewm(alpha=1/14, adjust=False).mean()
+                loss = (-delta.where(delta < 0, 0)).ewm(alpha=1/14, adjust=False).mean()
                 rsi = 100 - (100 / (1 + gain / loss.replace(0, float("nan"))))
                 
                 # Turnover and volume ratio
