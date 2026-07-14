@@ -43,7 +43,7 @@ from config.settings import (
     RS_THRESHOLD, DRAWDOWN_KILL_SWITCH_PCT, DRAWDOWN_REDUCE_SIZE_PCT, DRAWDOWN_REDUCE_TIER2_MULT,
     MACD_FAST, MACD_SLOW, MACD_SIGNAL, SAFE_HAVEN_SYMBOL,
     MAX_STOCK_ALLOCATION_PCT, MAX_NEW_TRADES_PER_DAY, SIZER_CASH_BUFFER_PCT,
-    GOLDBEES_PROFIT_EXIT_ONLY, GOLDBEES_MAX_LOSS_PCT,
+    GOLDBEES_PROFIT_EXIT_ONLY, GOLDBEES_MAX_LOSS_PCT, GOLD_EQUAL_SLOT_SIZING,
     NEXT_DAY_CLOSE_FILL_ENABLED, REGIME_SMOOTHING_ENABLED,
     REPLACE_MIN_NEW_RS, REPLACE_MAX_HELD_RS, REPLACE_MIN_GAP, MIN_PROFIT_SOFT,
     DD_THROTTLE_DISABLED_ENABLED,
@@ -821,7 +821,7 @@ class BacktestEngine:
                             atr = float(sig.indicators.get("atr", 0) or 0)
                             stops = initial_stops(exec_price, atr=atr)
 
-                            if sig.symbol == SAFE_HAVEN_SYMBOL:
+                            if sig.symbol == SAFE_HAVEN_SYMBOL and not GOLD_EQUAL_SLOT_SIZING:
                                 slot_cash = min(cash, portfolio_val * 0.50)
                             else:
                                 slot_cash = min(base_slot_cash, portfolio_val * MAX_STOCK_ALLOCATION_PCT)

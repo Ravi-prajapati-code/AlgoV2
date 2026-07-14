@@ -205,6 +205,14 @@ SAFE_HAVEN_SYMBOL           = "GOLDBEES.NS"
 SAFE_HAVEN_YIELD_ANNUAL     = 0.06         # Fallback 6% annual return if data missing
 GOLDBEES_PROFIT_EXIT_ONLY   = os.getenv("GOLDBEES_PROFIT_EXIT_ONLY", "false").lower() in ("true", "1", "yes")
 GOLDBEES_MAX_LOSS_PCT       = float(os.getenv("GOLDBEES_MAX_LOSS_PCT", "0.07"))  # cut GOLDBEES if loss exceeds this
+
+# Test-only, off by default: GOLDBEES currently gets a special-cased 50%-of-portfolio
+# cash-parking allocation that bypasses can_open_position's sector/correlation caps
+# entirely -- a different sizing philosophy than every other symbol's equal
+# base_slot_cash split. This makes GOLDBEES go through the exact same equal-slot
+# sizing and risk caps as any other candidate instead. Untested hypothesis, not a
+# known bug -- the 50% carve-out was a deliberate original design choice.
+GOLD_EQUAL_SLOT_SIZING      = os.getenv("GOLD_EQUAL_SLOT_SIZING", "false").lower() in ("true", "1", "yes")
 # ──────────────────────────────────────────────
 
 # ──────────────────────────────────────────────

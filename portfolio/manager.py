@@ -20,6 +20,7 @@ from charges.calculator import net_pnl, buy_charges
 from broker.base import BaseBroker
 from config.settings import (
     INITIAL_CAPITAL, round_to_tick, MAX_OPEN_POSITIONS, SAFE_HAVEN_SYMBOL, SIZER_CASH_BUFFER_PCT,
+    GOLD_EQUAL_SLOT_SIZING,
     MAX_STOCK_ALLOCATION_PCT, DRAWDOWN_REDUCE_SIZE_PCT, DRAWDOWN_REDUCE_TIER2_MULT, GTT_LIMIT_BUFFER_PCT,
     REPLACE_MIN_NEW_RS, REPLACE_MAX_HELD_RS, REPLACE_MIN_GAP, MIN_PROFIT_SOFT,
     MAX_NEW_TRADES_PER_DAY, DRAWDOWN_KILL_SWITCH_PCT, DD_THROTTLE_DISABLED_ENABLED,
@@ -562,7 +563,7 @@ class PortfolioManager:
                     stops = initial_stops(price, atr=atr)
 
                     # Safe haven: deploy up to 50% of portfolio value — limits drawdown from gold volatility
-                    if sig.symbol == SAFE_HAVEN_SYMBOL:
+                    if sig.symbol == SAFE_HAVEN_SYMBOL and not GOLD_EQUAL_SLOT_SIZING:
                         max_safe_haven = portfolio_val * 0.50
                         useable_cash = min(self.cash * (1.0 - SIZER_CASH_BUFFER_PCT), max_safe_haven)
                         target_val = useable_cash - buy_charges(useable_cash).total
@@ -576,7 +577,7 @@ class PortfolioManager:
 
                     if shares > 0:
                         # Safe haven bypasses stock/sector caps — it's a cash parking mechanism
-                        if sig.symbol != SAFE_HAVEN_SYMBOL:
+                        if sig.symbol != SAFE_HAVEN_SYMBOL or GOLD_EQUAL_SLOT_SIZING:
                             val = position_value(shares, price)
                             ok, reason = can_open_position(
                                 sig.symbol, val, portfolio_val,
