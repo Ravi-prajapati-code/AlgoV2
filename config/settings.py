@@ -133,6 +133,14 @@ SECTOR_DURABILITY_WEIGHT        = float(os.getenv("SECTOR_DURABILITY_WEIGHT", "0
 SECTOR_DURABILITY_LOOKBACK_DAYS = int(os.getenv("SECTOR_DURABILITY_LOOKBACK_DAYS", "180"))
 SECTOR_DURABILITY_MIN_TRADES    = int(os.getenv("SECTOR_DURABILITY_MIN_TRADES", "5"))
 
+# Regime-conditional position sizing (trade_attribution 2026-07-14: BEAR-regime
+# entries WR 60%/+38.6k vs BULL-regime entries ~breakeven/-875 on 5.6x the trade
+# count) -- scales the per-slot cash by regime_at_entry, applied to base_slot_cash
+# before the MAX_STOCK_ALLOCATION_PCT cap. Both default 1.0 = no-op, byte-identical
+# to current baseline. Test-only until gated.
+REGIME_SIZE_MULT_BEAR = float(os.getenv("REGIME_SIZE_MULT_BEAR", "1.0"))
+REGIME_SIZE_MULT_BULL = float(os.getenv("REGIME_SIZE_MULT_BULL", "1.0"))
+
 # Rank replacement (backtest/engine.py "Execute Buys"): evict the weakest-RS held
 # position for a much stronger waiting candidate when the portfolio is full.
 # docs/23_Assumption_Audit.md §XVIII — fired 0 times in 266 real trades because

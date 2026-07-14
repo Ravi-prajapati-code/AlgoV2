@@ -23,6 +23,7 @@ from config.settings import (
     MAX_STOCK_ALLOCATION_PCT, DRAWDOWN_REDUCE_SIZE_PCT, DRAWDOWN_REDUCE_TIER2_MULT, GTT_LIMIT_BUFFER_PCT,
     REPLACE_MIN_NEW_RS, REPLACE_MAX_HELD_RS, REPLACE_MIN_GAP, MIN_PROFIT_SOFT,
     MAX_NEW_TRADES_PER_DAY, DRAWDOWN_KILL_SWITCH_PCT, DD_THROTTLE_DISABLED_ENABLED,
+    REGIME_SIZE_MULT_BEAR, REGIME_SIZE_MULT_BULL,
 )
 from strategy.defensive_portfolio import (
     ROTATION_ENABLED, ROTATE_EXIT_RS, ROTATE_INTO_RS, ROTATE_MIN_GAP,
@@ -509,6 +510,7 @@ class PortfolioManager:
                 # Reserve 5% buffer so charges don't cause order rejection
                 spendable = self.cash * (1.0 - SIZER_CASH_BUFFER_PCT)
                 base_slot_cash = spendable / max(available_slots, 1)
+                base_slot_cash *= REGIME_SIZE_MULT_BEAR if regime == "BEAR" else REGIME_SIZE_MULT_BULL
                 # Graduated size reduction under drawdown — mirrors backtest engine
                 current_dd = (self.peak_value - portfolio_val) / self.peak_value if self.peak_value > 0 else 0.0
                 if not DD_THROTTLE_DISABLED_ENABLED:

@@ -36,6 +36,7 @@ from strategy.exit import initial_stops, check_exit_conditions
 from strategy.defensive_portfolio import (
     REGIME_SWITCH_DAYS, BULL_RECOVERY_DAYS, REBAL_DAYS, MIN_DEFENSIVE_HOLD_DAYS,
     ALL_DEFENSIVE_SYMBOLS, BEAR_SWING_RS_THRESHOLD, BEAR_SWING_SLOTS, BEAR_SWING_COOLDOWN_DAYS, GOLD_ETF,
+    REGIME_SIZE_MULT_BEAR,
     LIQUIDBEES, LIQUIDBEES_ENABLED, ENTRY_CONFIRM_DAYS,
     is_defensive_symbol, get_defensive_entries, compute_rebalance,
 )
@@ -668,7 +669,7 @@ def run(today: date = None, live_mode: bool = False, fund_injection: float = 0.0
             liq_remaining = liq_value  # track how much LIQUIDBEES is still available this loop
             for sym, rs_rank, ind in candidates[:bear_slots_free]:
                 ep = ind["close"] * 1.001
-                slot_cash = bear_capital / BEAR_SWING_SLOTS
+                slot_cash = (bear_capital / BEAR_SWING_SLOTS) * REGIME_SIZE_MULT_BEAR
                 slot_cash_capped = min(slot_cash, pv * MAX_STOCK_ALLOCATION_PCT)
                 alloc_ok, alloc_reason = can_open_position(sym, slot_cash_capped, pv, open_positions, prices)
                 if not alloc_ok:

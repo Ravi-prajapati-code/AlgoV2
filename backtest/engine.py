@@ -49,6 +49,7 @@ from config.settings import (
     DD_THROTTLE_DISABLED_ENABLED,
     SECTOR_DURABILITY_WEIGHT, SECTOR_DURABILITY_LOOKBACK_DAYS, SECTOR_DURABILITY_MIN_TRADES,
     ENTRY_EMA_MEDIUM, ENTRY_EMA_LONG, EXIT_TREND_EMA,
+    REGIME_SIZE_MULT_BEAR, REGIME_SIZE_MULT_BULL,
 )
 
 logger = logging.getLogger(__name__)
@@ -448,7 +449,7 @@ class BacktestEngine:
                                 candidates.append((symbol, rs_rank, ind))
                         candidates.sort(key=lambda x: x[1], reverse=True)
 
-                        slot_cash = cash / BEAR_SWING_SLOTS
+                        slot_cash = (cash / BEAR_SWING_SLOTS) * REGIME_SIZE_MULT_BEAR
                         for symbol, rs_rank, ind in candidates[:bear_slots_free]:
                             ep = self._lagged_fill_price(symbol, i, all_dates, ind["close"], "buy")
                             slot_cash_capped = min(slot_cash, portfolio_val * MAX_STOCK_ALLOCATION_PCT)
@@ -794,6 +795,7 @@ class BacktestEngine:
                         # portfolio/manager.py's live sizer (parity fix).
                         spendable = cash * (1.0 - SIZER_CASH_BUFFER_PCT)
                         base_slot_cash = spendable / available_slots
+                        base_slot_cash *= REGIME_SIZE_MULT_BULL
                         # Graduated size reduction under drawdown
                         if not DD_THROTTLE_DISABLED_ENABLED:
                             if current_dd >= DRAWDOWN_REDUCE_SIZE_PCT * DRAWDOWN_REDUCE_TIER2_MULT:
