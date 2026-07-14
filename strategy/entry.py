@@ -4,6 +4,7 @@ from config.settings import (
     TREND_GATE_200_ENABLED, ADX_TREND_THRESHOLD,
     EXTENSION_CAP_PCT, BREAKOUT_PCT, ENTRY_MODE,
     MIN_DAILY_TURNOVER, ENTRY_EMA_MEDIUM, ENTRY_EMA_LONG,
+    MACD_CONFIRM_ENABLED,
 )
 
 def check_entry(
@@ -81,6 +82,9 @@ def check_entry(
 
         if adx < ADX_TREND_THRESHOLD:
             return False, f"Weak ADX trend strength ({adx:.1f} < {ADX_TREND_THRESHOLD:.0f})"
+
+        if MACD_CONFIRM_ENABLED and not ind.get("macd_bullish", False):
+            return False, "MACD not bullish"
 
     if ENTRY_MODE == "FULL":
         adx = float(ind.get("adx", 0))

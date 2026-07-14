@@ -22,6 +22,16 @@ def update_trailing_stop(pos: Position, current_price: float, atr: float = 0, re
 
 MOMENTUM_RSI_THRESHOLD   = float(os.getenv("MOMENTUM_RSI",   "50"))
 
+# Profit-lock (test-only, off by default): trade_attribution 2026-07-14 found MFE
+# giveback rises monotonically with holding period (3.75% at 0-5d -> 10.56% at 60d+)
+# -- long winners give back the most before MOMENTUM_DECAY fires. This tightens the
+# RSI decay threshold, but only once a position is already up PROFIT_LOCK_GAIN_PCT,
+# so it can't clip a trade early -- still a pure signal exit, no broker-side stop
+# order, so it doesn't reintroduce the GTT-desync risk that got hard stops removed.
+PROFIT_LOCK_ENABLED      = os.getenv("PROFIT_LOCK_ENABLED", "false").lower() in ("true", "1", "yes")
+PROFIT_LOCK_GAIN_PCT     = float(os.getenv("PROFIT_LOCK_GAIN_PCT", "15")) / 100
+PROFIT_LOCK_RSI_THRESHOLD = float(os.getenv("PROFIT_LOCK_RSI", "58"))
+
 def check_exit_conditions(pos: Position, current_price: float, rs_rank: float = 100, indicators: dict = None) -> Tuple[bool, str]:
     # Stop-loss, trailing-stop, and profit-ceiling removed — exits fire only on the
     # system's own sell signals (momentum decay, regime/crash protection, score-drop,
@@ -37,8 +47,17 @@ def check_exit_conditions(pos: Position, current_price: float, rs_rank: float = 
     # capture with no offsetting benefit. rs_rank kept in the signature for caller
     # compatibility; unused here now.
 
+    rsi = indicators.get("rsi", 100) if indicators else 100
+
+    # Profit-lock — tighter RSI decay threshold once a winner is already up
+    # PROFIT_LOCK_GAIN_PCT, to cut giveback on long-running winners specifically.
+    if PROFIT_LOCK_ENABLED and pos.entry_price > 0:
+        gain = (current_price - pos.entry_price) / pos.entry_price
+        if gain >= PROFIT_LOCK_GAIN_PCT and rsi < PROFIT_LOCK_RSI_THRESHOLD:
+            return True, f"PROFIT_LOCK (gain {gain:.1%}, RSI < {PROFIT_LOCK_RSI_THRESHOLD:.0f})"
+
     # Momentum Decay (RSI) — soft
-    if indicators and indicators.get("rsi", 100) < MOMENTUM_RSI_THRESHOLD:
+    if rsi < MOMENTUM_RSI_THRESHOLD:
         return True, f"MOMENTUM_DECAY (RSI < {MOMENTUM_RSI_THRESHOLD:.0f})"
 
     return False, ""

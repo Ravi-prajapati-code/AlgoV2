@@ -113,6 +113,10 @@ EXTENSION_CAP_PCT    = float(os.getenv("EXTENSION_CAP_PCT", "0.15"))       # max
 BREAKOUT_PCT         = float(os.getenv("BREAKOUT_PCT", "0.05"))            # standard entry: within X of 20d high
 # 200-day EMA trend gate (off by default — live unaffected). Test-only refinement lever.
 TREND_GATE_200_ENABLED = os.getenv("TREND_GATE_200", "false").lower() in ("true", "1", "yes")
+# MACD bullish-crossover confirmation gate (off by default — live unaffected). Test-only:
+# ADX/SuperTrend already proven trend gates: MACD likely redundant, needs entry_attribution
+# isolation before this flag is ever flipped on for real.
+MACD_CONFIRM_ENABLED = os.getenv("MACD_CONFIRM_ENABLED", "false").lower() in ("true", "1", "yes")
 # Entry trend-alignment gate periods (strategy/entry.py: close > EMA_MED and EMA_MED > EMA_LONG).
 # Sweepable for docs/31 follow-up EMA-period test — defaults match the corrected ema_50/ema_100.
 ENTRY_EMA_MEDIUM     = int(os.getenv("ENTRY_EMA_MEDIUM", "50"))
