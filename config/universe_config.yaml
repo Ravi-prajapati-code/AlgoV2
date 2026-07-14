@@ -7,8 +7,8 @@
 universe:
   core_size: 100            # Max stocks in CORE (signals run against these)
   watchlist_size: 200       # Max stocks in WATCHLIST (monitored, not traded)
-  min_market_cap_cr: 2000   # Minimum market cap in crore (₹)
-  min_avg_daily_volume_cr: 3  # Minimum average daily traded value in crore (₹)
+  min_market_cap_cr: 4000   # Minimum market cap in crore (₹) — tightened from 2000, 2026-07-14
+  min_avg_daily_volume_cr: 10  # Minimum average daily traded value in crore (₹) — tightened from 3, 2026-07-14
   min_listing_days: 180     # Minimum trading days since listing
   exclude_sectors: []       # Sectors to always exclude (empty = none)
   nse_series: ["EQ"]
