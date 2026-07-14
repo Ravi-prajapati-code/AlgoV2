@@ -20,7 +20,7 @@ from charges.calculator import net_pnl, buy_charges
 from broker.base import BaseBroker
 from config.settings import (
     INITIAL_CAPITAL, round_to_tick, MAX_OPEN_POSITIONS, SAFE_HAVEN_SYMBOL, SIZER_CASH_BUFFER_PCT,
-    GOLD_EQUAL_SLOT_SIZING,
+    GOLD_EQUAL_SLOT_SIZING, SAFE_HAVEN_ALLOCATION_PCT,
     MAX_STOCK_ALLOCATION_PCT, DRAWDOWN_REDUCE_SIZE_PCT, DRAWDOWN_REDUCE_TIER2_MULT, GTT_LIMIT_BUFFER_PCT,
     REPLACE_MIN_NEW_RS, REPLACE_MAX_HELD_RS, REPLACE_MIN_GAP, MIN_PROFIT_SOFT,
     MAX_NEW_TRADES_PER_DAY, DRAWDOWN_KILL_SWITCH_PCT, DD_THROTTLE_DISABLED_ENABLED,
@@ -564,7 +564,7 @@ class PortfolioManager:
 
                     # Safe haven: deploy up to 50% of portfolio value — limits drawdown from gold volatility
                     if sig.symbol == SAFE_HAVEN_SYMBOL and not GOLD_EQUAL_SLOT_SIZING:
-                        max_safe_haven = portfolio_val * 0.50
+                        max_safe_haven = portfolio_val * SAFE_HAVEN_ALLOCATION_PCT
                         useable_cash = min(self.cash * (1.0 - SIZER_CASH_BUFFER_PCT), max_safe_haven)
                         target_val = useable_cash - buy_charges(useable_cash).total
                         shares = calculate_shares_for_value(target_val, price)

@@ -206,6 +206,12 @@ SAFE_HAVEN_YIELD_ANNUAL     = 0.06         # Fallback 6% annual return if data m
 GOLDBEES_PROFIT_EXIT_ONLY   = os.getenv("GOLDBEES_PROFIT_EXIT_ONLY", "false").lower() in ("true", "1", "yes")
 GOLDBEES_MAX_LOSS_PCT       = float(os.getenv("GOLDBEES_MAX_LOSS_PCT", "0.07"))  # cut GOLDBEES if loss exceeds this
 
+# Safe-haven cash-parking cap as a fraction of portfolio value. Default 0.50 matches
+# current live behavior byte-for-byte. Test candidate: 0.70 (GOLD_EQUAL_SLOT_SIZING
+# gate-REJECTED 2026-07-14 showed shrinking this allocation hurts -- testing whether
+# growing it instead helps, since 50% cushion may be undersized for real BEAR drawdowns).
+SAFE_HAVEN_ALLOCATION_PCT  = float(os.getenv("SAFE_HAVEN_ALLOCATION_PCT", "0.50"))
+
 # Test-only, off by default: GOLDBEES currently gets a special-cased 50%-of-portfolio
 # cash-parking allocation that bypasses can_open_position's sector/correlation caps
 # entirely -- a different sizing philosophy than every other symbol's equal
