@@ -19,8 +19,13 @@ load_dotenv(override=True)
 from db.repository import (
     init_db, load_positions, load_snapshots, save_signal,
     save_position, close_position_and_save_trade, get_last_position, was_sold_today,
-    snapshot_exists_for_date, get_last_ohlcv_close, bear_swing_sold_within,
+    snapshot_exists_for_date, get_last_ohlcv_close, bear_swing_sold_within, load_trades,
 )
+
+# A prev DB record only counts as a genuine sync gap (broker API hiccup, T+1 timing)
+# if its most recent trade closed within this many days — otherwise it's a different
+# real-world holding lineage. See sync_portfolio_with_broker, docs/30.
+RECENT_GAP_DAYS = 3
 from data.fetcher import fetch_all, fetch_index
 from data.universe import get_all_symbols, get_sector
 from indicators.composite import compute_all
@@ -253,7 +258,18 @@ def sync_portfolio_with_broker(broker, today: date):
                     continue
 
                 # Recover original entry_date from any previous record (closed due to API error, etc.)
+                # — but only trust that recovery for a GENUINE same-cycle gap (broker API hiccup,
+                # T+1 residue mistiming). A prev record whose most recent trade closed days/weeks
+                # ago belongs to a different real-world holding lineage (e.g. re-acquired manually
+                # after the strategy exited) — treating it as a live re-add would both misclassify
+                # origin and backdate entry_price/date to a stale, unrelated trade. docs/30.
                 prev = get_last_position(lp.symbol)
+                last_trade = next((t for t in load_trades() if t.symbol == lp.symbol), None)
+                is_recent_gap = bool(
+                    prev and last_trade and (today - last_trade.exit_date).days <= RECENT_GAP_DAYS
+                )
+                if prev and not is_recent_gap:
+                    prev = None  # stale lineage — treat as a fresh (likely manual) holding
                 recovered_date = prev.entry_date if prev else today
                 # Upstox avg_price = 0 for T+1 holdings; use ltp then OHLCV as fallback
                 broker_price = lp.avg_price if lp.avg_price > 0 else lp.ltp
