@@ -120,7 +120,7 @@ ENTRY_EMA_LONG       = int(os.getenv("ENTRY_EMA_LONG", "100"))
 # TREND_BREAK exit period + consecutive-day confirmation (strategy/signals.py).
 EXIT_TREND_EMA       = int(os.getenv("EXIT_TREND_EMA", "50"))
 EXIT_TREND_CONFIRM_DAYS = int(os.getenv("EXIT_TREND_CONFIRM_DAYS", "2"))
-DD_THROTTLE_DISABLED_ENABLED = os.getenv("DD_THROTTLE_DISABLED", "false").lower() in ("true", "1", "yes")
+DD_THROTTLE_DISABLED_ENABLED = os.getenv("DD_THROTTLE_DISABLED", "true").lower() in ("true", "1", "yes")
 # Entry Attribution Suite (docs/23_Assumption_Audit.md §XIV) — isolates which piece of the
 # entry gate creates edge. FULL = live behavior, unchanged. Test-only, live unaffected.
 ENTRY_MODE      = os.getenv("ENTRY_MODE", "FULL")
@@ -129,7 +129,7 @@ ENTRY_MODE      = os.getenv("ENTRY_MODE", "FULL")
 # causal per-sector trailing-trade-return nudge to entry score. Off by default (weight=0).
 # Distinct from the rejected SECTOR_BLACKLIST (static, full-sample, hard exclusion): this is
 # continuous, trailing-window-only, no lookahead. Test-only, live unaffected while weight=0.
-SECTOR_DURABILITY_WEIGHT        = float(os.getenv("SECTOR_DURABILITY_WEIGHT", "0"))
+SECTOR_DURABILITY_WEIGHT        = float(os.getenv("SECTOR_DURABILITY_WEIGHT", "1.0"))
 SECTOR_DURABILITY_LOOKBACK_DAYS = int(os.getenv("SECTOR_DURABILITY_LOOKBACK_DAYS", "180"))
 SECTOR_DURABILITY_MIN_TRADES    = int(os.getenv("SECTOR_DURABILITY_MIN_TRADES", "5"))
 
