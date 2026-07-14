@@ -42,6 +42,7 @@ from dotenv import dotenv_values
 
 REPO_ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 sys.path.insert(0, REPO_ROOT)
+DOTENV_PATH = os.path.join(REPO_ROOT, ".env")
 
 from config.settings import MARKET_INDEX_SYMBOL
 from data.universe import get_all_symbols
@@ -112,7 +113,7 @@ def check_config_drift(active_overrides: dict) -> list:
         os.path.join(REPO_ROOT, "config", "settings.py"),
         os.path.join(REPO_ROOT, "strategy", "defensive_portfolio.py"),
     ])
-    dotenv_path = os.path.join(REPO_ROOT, ".env")
+    dotenv_path = DOTENV_PATH
     dotenv_vals = dotenv_values(dotenv_path) if os.path.exists(dotenv_path) else {}
     effective = {**os.environ, **{k: v for k, v in dotenv_vals.items() if v is not None}}
 
@@ -137,6 +138,32 @@ def apply_env(overrides: dict):
 def clear_env(overrides: dict):
     for k in overrides:
         os.environ.pop(k, None)
+
+
+def hide_dotenv():
+    """
+    Rename .env aside for the duration of the arm runs. clear_env() only pops
+    keys from THIS process's os.environ -- but each subprocess's own
+    main.py:24 does load_dotenv(override=True), which re-reads .env straight
+    off disk and stamps its values back in regardless of what clear_env()
+    cleared or what env= was passed to subprocess.run(). Any key currently
+    non-default in .env (e.g. ENTRY_EMA_MEDIUM/EXIT_TREND_EMA once they got
+    written there during deploy) can then never be cleared for the baseline
+    arm -- baseline silently runs candidate config too, producing a false
+    PASS (byte-identical baseline/candidate). Caught 2026-07-14 re-gating the
+    atr/rsi fix; see docs/33. Safe: every OTHER .env value (DB path, creds)
+    is unaffected, since this process already loaded them via
+    config.settings' own load_dotenv() at import time, and that's what
+    flows into each subprocess's env= dict via {**os.environ}.
+    """
+    if os.path.exists(DOTENV_PATH):
+        os.rename(DOTENV_PATH, DOTENV_PATH + ".gate_bak")
+
+
+def restore_dotenv():
+    bak = DOTENV_PATH + ".gate_bak"
+    if os.path.exists(bak):
+        os.rename(bak, DOTENV_PATH)
 
 
 def run_full_and_oos_arm(overrides: dict, active: bool) -> dict:
@@ -250,14 +277,22 @@ def main():
               "env var, before this gate result can be trusted.")
         sys.exit(1)
 
-    baseline_oos = run_full_and_oos_arm(overrides, active=False)
-    candidate_oos = run_full_and_oos_arm(overrides, active=True)
-    oos_failures = print_oos_section(baseline_oos, candidate_oos)
+    # .env hidden from disk for the arm runs so each subprocess's own
+    # load_dotenv(override=True) can't re-populate keys clear_env() just
+    # cleared (see hide_dotenv() docstring / docs/33). Restored even on
+    # crash so a failed gate run never leaves .env missing.
+    hide_dotenv()
+    try:
+        baseline_oos = run_full_and_oos_arm(overrides, active=False)
+        candidate_oos = run_full_and_oos_arm(overrides, active=True)
+        oos_failures = print_oos_section(baseline_oos, candidate_oos)
 
-    symbols = get_all_symbols() + [MARKET_INDEX_SYMBOL]
-    history = load_real_history(symbols)
-    stress_rows = run_stress_both_arms(overrides, history, args.seed)
-    stress_failures = print_stress_section(stress_rows)
+        symbols = get_all_symbols() + [MARKET_INDEX_SYMBOL]
+        history = load_real_history(symbols)
+        stress_rows = run_stress_both_arms(overrides, history, args.seed)
+        stress_failures = print_stress_section(stress_rows)
+    finally:
+        restore_dotenv()
 
     all_failures = oos_failures + stress_failures
     print("\n=== VERDICT ===")
