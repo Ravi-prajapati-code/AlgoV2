@@ -7,7 +7,7 @@ from db.models import Signal, Position
 from strategy.entry import check_entry
 from strategy.exit import check_exit_conditions, initial_stops
 from data.universe import get_sector
-from config.settings import IGNORE_SYMBOLS, BLOCKED_SECTORS, BLOCKED_SYMBOLS, SAFE_HAVEN_SYMBOL, SAFE_HAVEN_ENABLED, GOLDBEES_PROFIT_EXIT_ONLY, GOLDBEES_MAX_LOSS_PCT, ENTRY_MODE, ENTRY_MODE_SEED, SECTOR_DURABILITY_WEIGHT, EXIT_TREND_EMA, EXIT_TREND_CONFIRM_DAYS, CRASH_PROTECTION_STOCK_OVERRIDE, CRASH_PROTECTION_CONFIRM_DAYS
+from config.settings import IGNORE_SYMBOLS, BLOCKED_SECTORS, BLOCKED_SYMBOLS, SAFE_HAVEN_SYMBOL, SAFE_HAVEN_ENABLED, GOLDBEES_PROFIT_EXIT_ONLY, GOLDBEES_MAX_LOSS_PCT, ENTRY_MODE, ENTRY_MODE_SEED, SECTOR_DURABILITY_WEIGHT, EXIT_TREND_EMA, EXIT_TREND_CONFIRM_DAYS
 from strategy.defensive_portfolio import MIN_GOLDBEES_HOLD_DAYS
 
 logger = logging.getLogger(__name__)
@@ -91,12 +91,7 @@ def generate_signals(
         exit_triggered, exit_reason = check_exit_conditions(pos, current_price, rs_rank, indicators=ind)
 
         if not exit_triggered:
-            force_bear_exit = (regime == "BEAR")
-            if force_bear_exit and CRASH_PROTECTION_STOCK_OVERRIDE:
-                if ind.get('bear_trend_confirm_days', 0) >= CRASH_PROTECTION_CONFIRM_DAYS:
-                    force_bear_exit = False
-
-            if force_bear_exit:
+            if regime == "BEAR":
                 exit_triggered = True
                 exit_reason = "MARKET_CRASH_PROTECTION (Index < 100 EMA)"
             elif current_price < ema_exit_trend:
@@ -131,11 +126,7 @@ def generate_signals(
                     reason="ENTER_SAFE_HAVEN (Market is BEAR)",
                     indicators=sh_ind or {}
                 ))
-        if not CRASH_PROTECTION_STOCK_OVERRIDE:
-            return signals, updated_positions
-        # else: fall through to the normal candidate-evaluation loop below —
-        # check_entry()'s existing EMA/SuperTrend/ADX trend gate is the bar a
-        # stock must clear to enter even while the market regime is BEAR.
+        return signals, updated_positions
 
     # Entry Attribution Suite (docs/23_Assumption_Audit.md §XIV): SHUFFLE_RS tests
     # whether the RS *value* matters or just which stock it's attached to — permute
@@ -177,10 +168,6 @@ def generate_signals(
             check_ind, symbol=symbol, regime=regime,
             index_confirming=index_confirming
         )
-
-        if qualified and regime == "BEAR" and CRASH_PROTECTION_STOCK_OVERRIDE:
-            if check_ind.get('bear_trend_confirm_days', 0) < CRASH_PROTECTION_CONFIRM_DAYS:
-                qualified = False
 
         if qualified:
             if ENTRY_MODE == "REVERSE_RS":
