@@ -230,6 +230,15 @@ GOLD_EQUAL_SLOT_SIZING      = os.getenv("GOLD_EQUAL_SLOT_SIZING", "false").lower
 # was already gate-REJECTED (docs/25, crash_protection_exit_isolation); this is
 # the narrower stock-level-override variant, not a re-test of that.
 CRASH_PROTECTION_STOCK_OVERRIDE = os.getenv("CRASH_PROTECTION_STOCK_OVERRIDE", "false").lower() in ("true", "1", "yes")
+
+# A single day of stock-level trend confirmation was gate-REJECTED (docs/24 --
+# same prolonged_sideways_chop failure as every other veto-loosening lever).
+# This requires the stock's own trend to have been confirmed for N consecutive
+# days (indicators/composite.py's bear_trend_confirm_days) before the override
+# applies -- same hysteresis idea as REGIME_SWITCH_DAYS/BULL_RECOVERY_DAYS, just
+# at the stock level instead of the market level. Only consulted when
+# CRASH_PROTECTION_STOCK_OVERRIDE is also on.
+CRASH_PROTECTION_CONFIRM_DAYS = int(os.getenv("CRASH_PROTECTION_CONFIRM_DAYS", "3"))
 # ──────────────────────────────────────────────
 
 # ──────────────────────────────────────────────

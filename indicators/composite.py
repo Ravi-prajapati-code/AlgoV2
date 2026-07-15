@@ -92,7 +92,7 @@ def compute_indicators(df: pd.DataFrame, symbol: str = "", rs_metrics: Optional[
     # Sweepable entry/exit EMA periods (docs/31) — reuse the fixed series above
     # when the configured period matches one already computed, to avoid a
     # duplicate ewm() call for the (common) case of running at defaults.
-    from config.settings import ENTRY_EMA_MEDIUM, ENTRY_EMA_LONG, EXIT_TREND_EMA
+    from config.settings import ENTRY_EMA_MEDIUM, ENTRY_EMA_LONG, EXIT_TREND_EMA, ADX_TREND_THRESHOLD
     _period_series = {20: last_ema_20, 50: ema_50, 100: ema_100, 150: ema_150, 200: ema_200}
 
     def _ema_at(period: int):
@@ -100,6 +100,12 @@ def compute_indicators(df: pd.DataFrame, symbol: str = "", rs_metrics: Optional[
         if cached is not None:
             return cached.iloc[-1] if hasattr(cached, "iloc") else cached
         return close.ewm(span=period, adjust=False, min_periods=1).mean().iloc[-1]
+
+    def _ema_series_at(period: int):
+        cached = _period_series.get(period)
+        if cached is not None:
+            return cached
+        return close.ewm(span=period, adjust=False, min_periods=1).mean()
 
     last_ema_entry_med  = _ema_at(ENTRY_EMA_MEDIUM)
     last_ema_entry_long = _ema_at(ENTRY_EMA_LONG)
@@ -164,6 +170,7 @@ def compute_indicators(df: pd.DataFrame, symbol: str = "", rs_metrics: Optional[
 
     # ADX — trend strength (14-period), Wilder's smoothing (alpha=1/14) matches TradingView
     adx_val = 0.0
+    adx_series = None
     if length >= 15:
         high_s = df['high']
         low_s  = df['low']
@@ -173,7 +180,37 @@ def compute_indicators(df: pd.DataFrame, symbol: str = "", rs_metrics: Optional[
         plus_di  = 100 * plus_dm.ewm(alpha=1.0 / 14, adjust=False).mean() / atr14.replace(0, np.nan)
         minus_di = 100 * minus_dm.ewm(alpha=1.0 / 14, adjust=False).mean() / atr14.replace(0, np.nan)
         dx = (100 * (plus_di - minus_di).abs() / (plus_di + minus_di).replace(0, np.nan)).fillna(0)
-        adx_val  = float(dx.ewm(alpha=1.0 / 14, adjust=False).mean().iloc[-1])
+        adx_series = dx.ewm(alpha=1.0 / 14, adjust=False).mean()
+        adx_val  = float(adx_series.iloc[-1])
+
+    # Bear-regime crash-protection stock-level trend-confirm streak: how many
+    # consecutive days (ending today) has this stock cleared the same
+    # EMA-alignment/SuperTrend/ADX bar strategy/entry.py's check_entry() uses.
+    # A single-day version of this check was gate-REJECTED (docs/24) --
+    # CRASH_PROTECTION_CONFIRM_DAYS requires it to hold for several days
+    # running before strategy/signals.py trusts it, same hysteresis idea as
+    # REGIME_SWITCH_DAYS/BULL_RECOVERY_DAYS but at the stock level. Computed
+    # once here (vectorized) so both the exit-override and entry-override paths
+    # can use it without any per-day stateful tracking.
+    bear_trend_confirm_days = 0
+    if adx_series is not None:
+        ema_med_series  = _ema_series_at(ENTRY_EMA_MEDIUM)
+        ema_long_series = _ema_series_at(ENTRY_EMA_LONG)
+        st_dir_series   = trend.get("st_direction_series")
+        if st_dir_series is not None:
+            n = min(len(close), len(ema_med_series), len(ema_long_series),
+                    len(adx_series), len(st_dir_series))
+            intact = (
+                (close.iloc[-n:].values > ema_med_series.iloc[-n:].values)
+                & (ema_med_series.iloc[-n:].values > ema_long_series.iloc[-n:].values)
+                & (st_dir_series.iloc[-n:].isin([1, "up"]).values)
+                & (adx_series.iloc[-n:].values >= ADX_TREND_THRESHOLD)
+            )
+            for v in intact[::-1]:
+                if v:
+                    bear_trend_confirm_days += 1
+                else:
+                    break
 
     return {
         "symbol":     symbol,
@@ -216,6 +253,7 @@ def compute_indicators(df: pd.DataFrame, symbol: str = "", rs_metrics: Optional[
         "week52_high": week52_high,
         "perf_10d":   round(perf_10d, 2),
         "adx":         round(adx_val, 2),
+        "bear_trend_confirm_days": bear_trend_confirm_days,
         "vcp_detected": vcp["vcp_detected"],
         "vcp_pivot":    vcp["vcp_pivot"],
         "vol_dry_up":   vcp["vol_dry_up"],

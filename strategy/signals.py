@@ -7,7 +7,7 @@ from db.models import Signal, Position
 from strategy.entry import check_entry
 from strategy.exit import check_exit_conditions, initial_stops
 from data.universe import get_sector
-from config.settings import IGNORE_SYMBOLS, BLOCKED_SECTORS, BLOCKED_SYMBOLS, SAFE_HAVEN_SYMBOL, SAFE_HAVEN_ENABLED, GOLDBEES_PROFIT_EXIT_ONLY, GOLDBEES_MAX_LOSS_PCT, ENTRY_MODE, ENTRY_MODE_SEED, SECTOR_DURABILITY_WEIGHT, EXIT_TREND_EMA, EXIT_TREND_CONFIRM_DAYS, CRASH_PROTECTION_STOCK_OVERRIDE, ADX_TREND_THRESHOLD
+from config.settings import IGNORE_SYMBOLS, BLOCKED_SECTORS, BLOCKED_SYMBOLS, SAFE_HAVEN_SYMBOL, SAFE_HAVEN_ENABLED, GOLDBEES_PROFIT_EXIT_ONLY, GOLDBEES_MAX_LOSS_PCT, ENTRY_MODE, ENTRY_MODE_SEED, SECTOR_DURABILITY_WEIGHT, EXIT_TREND_EMA, EXIT_TREND_CONFIRM_DAYS, CRASH_PROTECTION_STOCK_OVERRIDE, CRASH_PROTECTION_CONFIRM_DAYS
 from strategy.defensive_portfolio import MIN_GOLDBEES_HOLD_DAYS
 
 logger = logging.getLogger(__name__)
@@ -93,17 +93,7 @@ def generate_signals(
         if not exit_triggered:
             force_bear_exit = (regime == "BEAR")
             if force_bear_exit and CRASH_PROTECTION_STOCK_OVERRIDE:
-                ema_entry_med = ind.get('ema_entry_med', ema_50) or ema_50
-                ema_100 = ind.get('ema_100', 0)
-                ema_entry_long = ind.get('ema_entry_long', ema_100) or ema_100
-                adx = ind.get('adx', 0)
-                st_dir = ind.get('st_direction', -1)
-                stock_trend_intact = (
-                    current_price > ema_entry_med > ema_entry_long
-                    and st_dir in (1, "up")
-                    and adx >= ADX_TREND_THRESHOLD
-                )
-                if stock_trend_intact:
+                if ind.get('bear_trend_confirm_days', 0) >= CRASH_PROTECTION_CONFIRM_DAYS:
                     force_bear_exit = False
 
             if force_bear_exit:
@@ -187,6 +177,10 @@ def generate_signals(
             check_ind, symbol=symbol, regime=regime,
             index_confirming=index_confirming
         )
+
+        if qualified and regime == "BEAR" and CRASH_PROTECTION_STOCK_OVERRIDE:
+            if check_ind.get('bear_trend_confirm_days', 0) < CRASH_PROTECTION_CONFIRM_DAYS:
+                qualified = False
 
         if qualified:
             if ENTRY_MODE == "REVERSE_RS":

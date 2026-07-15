@@ -137,4 +137,5 @@ def compute_trend(df: pd.DataFrame) -> dict:
         "st_direction": last_dir,
         "ema_fast_series": ema_f,
         "ema_slow_series": ema_s,
+        "st_direction_series": st_df['direction'],
     }
