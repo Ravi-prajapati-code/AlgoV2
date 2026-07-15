@@ -50,9 +50,7 @@ from config.settings import (
     SECTOR_DURABILITY_WEIGHT, SECTOR_DURABILITY_LOOKBACK_DAYS, SECTOR_DURABILITY_MIN_TRADES,
     ENTRY_EMA_MEDIUM, ENTRY_EMA_LONG, EXIT_TREND_EMA,
     REGIME_SIZE_MULT_BEAR, REGIME_SIZE_MULT_BULL,
-    BREADTH_REGIME_CONFIRM_ENABLED,
 )
-from strategy.breadth import compute_breadth_series
 
 logger = logging.getLogger(__name__)
 
@@ -967,35 +965,18 @@ class BacktestEngine:
         regime_by_time = {}
         idx_confirmed_by_time = {}
         nifty_pullback_ok_by_time = {}
-        symbols = [s for s in self.data.keys() if s != MARKET_INDEX_SYMBOL]
         for t in times:
             idx_time = index_full[index_full.index.time <= t].resample('D').agg({
                 'open': 'first', 'high': 'max', 'low': 'min', 'close': 'last', 'volume': 'sum'
             }).dropna()
             index_by_time[t] = idx_time
-
-            # Breadth (opt-in): resample the whole universe as-of the same time
-            # cutoff, expanding window per day, no lookahead — used only to
-            # confirm/override detect_regime()'s index-only trigger below.
-            breadth_by_date = None
-            if BREADTH_REGIME_CONFIRM_ENABLED:
-                stock_data_t = {}
-                for symbol in symbols:
-                    df_min = self.data[symbol]
-                    s_daily = df_min[df_min.index.time <= t].resample('D').agg({'close': 'last'}).dropna()
-                    stock_data_t[symbol] = s_daily
-                breadth_by_date = compute_breadth_series(stock_data_t).reindex(idx_time.index)
-
             # Precompute regime (100 EMA)
             if REGIME_SMOOTHING_ENABLED:
                 # Match live's detect_regime() (3-day-confirm + hysteresis whipsaw
                 # filter) instead of a raw same-day EMA100 crossover — expanding
                 # window per day, no lookahead.
                 regime_by_time[t] = {
-                    idx_time.index[j].date(): detect_regime(
-                        idx_time.iloc[:j + 1],
-                        breadth=(breadth_by_date.iloc[j] if breadth_by_date is not None else None),
-                    )
+                    idx_time.index[j].date(): detect_regime(idx_time.iloc[:j + 1])
                     for j in range(len(idx_time))
                 }
             else:
@@ -1014,6 +995,7 @@ class BacktestEngine:
 
         # 2. Compute RS Ratios cross-sectionally for each time
         rs_ratios_by_time = {}
+        symbols = [s for s in self.data.keys() if s != MARKET_INDEX_SYMBOL]
 
         for t in times:
             idx_close = index_by_time[t]['close']

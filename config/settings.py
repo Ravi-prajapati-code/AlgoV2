@@ -191,14 +191,6 @@ NEXT_DAY_CLOSE_FILL_ENABLED = os.getenv("NEXT_DAY_CLOSE_FILL", "true").lower() i
 # Set REGIME_SMOOTHING=false to reproduce the old (incorrect) raw-signal numbers.
 REGIME_SMOOTHING_ENABLED = os.getenv("REGIME_SMOOTHING", "true").lower() in ("true", "1", "yes")
 
-# Market breadth (% of universe above EMA50) as an additional confirmation on
-# detect_regime()'s index-only trigger — sharpens the trigger, does not loosen
-# the response (5 prior attempts at loosening the BEAR response were all
-# rejected/reverted; this is a different mechanism). Default OFF.
-BREADTH_REGIME_CONFIRM_ENABLED = os.getenv("BREADTH_REGIME_CONFIRM_ENABLED", "false").lower() in ("true", "1", "yes")
-BREADTH_BEAR_MAX_PCT = float(os.getenv("BREADTH_BEAR_MAX_PCT", "40"))
-BREADTH_BULL_MIN_PCT = float(os.getenv("BREADTH_BULL_MIN_PCT", "50"))
-
 # ──────────────────────────────────────────────
 # BACKTESTING — SLIPPAGE (Phase 2)
 # ──────────────────────────────────────────────
