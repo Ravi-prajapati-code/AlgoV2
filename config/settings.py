@@ -219,6 +219,17 @@ SAFE_HAVEN_ALLOCATION_PCT  = float(os.getenv("SAFE_HAVEN_ALLOCATION_PCT", "0.50"
 # sizing and risk caps as any other candidate instead. Untested hypothesis, not a
 # known bug -- the 50% carve-out was a deliberate original design choice.
 GOLD_EQUAL_SLOT_SIZING      = os.getenv("GOLD_EQUAL_SLOT_SIZING", "false").lower() in ("true", "1", "yes")
+
+# Test-only, off by default: MARKET_CRASH_PROTECTION today force-exits every open
+# stock position (and blocks all new stock entries) the instant market regime
+# flips to BEAR, regardless of that individual stock's own trend. When this flag
+# is on, a stock whose own trend is still intact (EMA alignment + SuperTrend up +
+# ADX >= ADX_TREND_THRESHOLD -- the same bar strategy/entry.py's check_entry()
+# uses) is exempted from the forced exit, and new entries are evaluated normally
+# via check_entry() instead of being blocked outright. Full regime-veto removal
+# was already gate-REJECTED (docs/25, crash_protection_exit_isolation); this is
+# the narrower stock-level-override variant, not a re-test of that.
+CRASH_PROTECTION_STOCK_OVERRIDE = os.getenv("CRASH_PROTECTION_STOCK_OVERRIDE", "false").lower() in ("true", "1", "yes")
 # ──────────────────────────────────────────────
 
 # ──────────────────────────────────────────────

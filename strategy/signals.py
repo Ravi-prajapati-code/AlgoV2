@@ -7,7 +7,7 @@ from db.models import Signal, Position
 from strategy.entry import check_entry
 from strategy.exit import check_exit_conditions, initial_stops
 from data.universe import get_sector
-from config.settings import IGNORE_SYMBOLS, BLOCKED_SECTORS, BLOCKED_SYMBOLS, SAFE_HAVEN_SYMBOL, SAFE_HAVEN_ENABLED, GOLDBEES_PROFIT_EXIT_ONLY, GOLDBEES_MAX_LOSS_PCT, ENTRY_MODE, ENTRY_MODE_SEED, SECTOR_DURABILITY_WEIGHT, EXIT_TREND_EMA, EXIT_TREND_CONFIRM_DAYS
+from config.settings import IGNORE_SYMBOLS, BLOCKED_SECTORS, BLOCKED_SYMBOLS, SAFE_HAVEN_SYMBOL, SAFE_HAVEN_ENABLED, GOLDBEES_PROFIT_EXIT_ONLY, GOLDBEES_MAX_LOSS_PCT, ENTRY_MODE, ENTRY_MODE_SEED, SECTOR_DURABILITY_WEIGHT, EXIT_TREND_EMA, EXIT_TREND_CONFIRM_DAYS, CRASH_PROTECTION_STOCK_OVERRIDE, ADX_TREND_THRESHOLD
 from strategy.defensive_portfolio import MIN_GOLDBEES_HOLD_DAYS
 
 logger = logging.getLogger(__name__)
@@ -91,7 +91,22 @@ def generate_signals(
         exit_triggered, exit_reason = check_exit_conditions(pos, current_price, rs_rank, indicators=ind)
 
         if not exit_triggered:
-            if regime == "BEAR":
+            force_bear_exit = (regime == "BEAR")
+            if force_bear_exit and CRASH_PROTECTION_STOCK_OVERRIDE:
+                ema_entry_med = ind.get('ema_entry_med', ema_50) or ema_50
+                ema_100 = ind.get('ema_100', 0)
+                ema_entry_long = ind.get('ema_entry_long', ema_100) or ema_100
+                adx = ind.get('adx', 0)
+                st_dir = ind.get('st_direction', -1)
+                stock_trend_intact = (
+                    current_price > ema_entry_med > ema_entry_long
+                    and st_dir in (1, "up")
+                    and adx >= ADX_TREND_THRESHOLD
+                )
+                if stock_trend_intact:
+                    force_bear_exit = False
+
+            if force_bear_exit:
                 exit_triggered = True
                 exit_reason = "MARKET_CRASH_PROTECTION (Index < 100 EMA)"
             elif current_price < ema_exit_trend:
@@ -126,7 +141,11 @@ def generate_signals(
                     reason="ENTER_SAFE_HAVEN (Market is BEAR)",
                     indicators=sh_ind or {}
                 ))
-        return signals, updated_positions
+        if not CRASH_PROTECTION_STOCK_OVERRIDE:
+            return signals, updated_positions
+        # else: fall through to the normal candidate-evaluation loop below —
+        # check_entry()'s existing EMA/SuperTrend/ADX trend gate is the bar a
+        # stock must clear to enter even while the market regime is BEAR.
 
     # Entry Attribution Suite (docs/23_Assumption_Audit.md §XIV): SHUFFLE_RS tests
     # whether the RS *value* matters or just which stock it's attached to — permute
