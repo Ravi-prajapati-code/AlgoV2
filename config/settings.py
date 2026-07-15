@@ -210,7 +210,7 @@ GOLDBEES_MAX_LOSS_PCT       = float(os.getenv("GOLDBEES_MAX_LOSS_PCT", "0.07")) 
 # current live behavior byte-for-byte. Test candidate: 0.70 (GOLD_EQUAL_SLOT_SIZING
 # gate-REJECTED 2026-07-14 showed shrinking this allocation hurts -- testing whether
 # growing it instead helps, since 50% cushion may be undersized for real BEAR drawdowns).
-SAFE_HAVEN_ALLOCATION_PCT  = float(os.getenv("SAFE_HAVEN_ALLOCATION_PCT", "0.50"))
+SAFE_HAVEN_ALLOCATION_PCT  = float(os.getenv("SAFE_HAVEN_ALLOCATION_PCT", "0.40"))
 
 # Test-only, off by default: GOLDBEES currently gets a special-cased 50%-of-portfolio
 # cash-parking allocation that bypasses can_open_position's sector/correlation caps
