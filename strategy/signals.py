@@ -188,6 +188,7 @@ def generate_signals(
             })
 
     candidates.sort(key=lambda x: x["rs_rank"], reverse=True)
+    logger.debug("[Signals] %d candidate(s) qualified for entry today", len(candidates))
 
     for cand in candidates:
         price = cand["indicators"]['close']

@@ -32,6 +32,7 @@ from indicators.composite import compute_all
 from strategy.signals import generate_signals
 from strategy.regime import detect_regime, is_buy_allowed, MIN_INDEX_CANDLES, is_index_confirming
 from strategy.relative_strength import compute_rs_for_all
+from strategy.breadth import compute_breadth
 from strategy.exit import initial_stops, check_exit_conditions
 from strategy.defensive_portfolio import (
     REGIME_SWITCH_DAYS, BULL_RECOVERY_DAYS, REBAL_DAYS, MIN_DEFENSIVE_HOLD_DAYS,
@@ -47,6 +48,7 @@ from charges.calculator import buy_charges, net_pnl
 from config.settings import round_to_tick
 from runner.signal_output import write_signals, write_portfolio_state
 from config.settings import INITIAL_CAPITAL, MARKET_INDEX_SYMBOL, MAX_STOCK_ALLOCATION_PCT, GOLDBEES_PROFIT_EXIT_ONLY, GOLDBEES_MAX_LOSS_PCT
+from config.settings import BREADTH_REGIME_CONFIRM_ENABLED
 from db.models import Position, Signal, Trade
 
 logging.basicConfig(
@@ -444,16 +446,7 @@ def run(today: date = None, live_mode: bool = False, fund_injection: float = 0.0
     # Backup DB at start of each run (before any writes)
     _backup_db(today)
 
-    # 4. Detect regime
-    if index_candles < 20:
-        logger.warning("Insufficient market data (%d/20). Defaulting to BULL.", index_candles)
-        regime, market_bullish = "BULL", True
-    else:
-        regime = detect_regime(index_df)
-        market_bullish = is_buy_allowed(regime)
-        logger.info("Market regime: %s | BUY entries %s", regime, "ALLOWED" if market_bullish else "BLOCKED")
-
-    # 5. Fetch stock data (include defensive symbols so they're available for prices)
+    # 4. Fetch stock data (include defensive symbols so they're available for prices)
     symbols = list(dict.fromkeys(get_all_symbols() + ALL_DEFENSIVE_SYMBOLS))
     data = fetch_all(symbols, live_mode=live_mode)
     if not data:
@@ -472,7 +465,7 @@ def run(today: date = None, live_mode: bool = False, fund_injection: float = 0.0
         )
         return
 
-    # 5b. Warmup adequacy check — warn if any symbol has < 450 days (EMA150 needs ~450 to converge)
+    # 4b. Warmup adequacy check — warn if any symbol has < 450 days (EMA150 needs ~450 to converge)
     MIN_WARMUP = 450
     thin_symbols = [sym for sym, df in data.items() if sym != MARKET_INDEX_SYMBOL and len(df) < MIN_WARMUP]
     if thin_symbols:
@@ -480,6 +473,19 @@ def run(today: date = None, live_mode: bool = False, fund_injection: float = 0.0
             "[Warmup] %d symbol(s) have < %d days of history — EMA(150)/regime may be inaccurate: %s",
             len(thin_symbols), MIN_WARMUP, thin_symbols[:10],
         )
+
+    # 5. Detect regime — after stock data fetch so breadth (whole-universe, opt-in)
+    # can be computed and passed in as an additional confirmation.
+    if index_candles < 20:
+        logger.warning("Insufficient market data (%d/20). Defaulting to BULL.", index_candles)
+        regime, market_bullish = "BULL", True
+    else:
+        breadth_val = None
+        if BREADTH_REGIME_CONFIRM_ENABLED:
+            breadth_val = compute_breadth({s: df for s, df in data.items() if s != MARKET_INDEX_SYMBOL})
+        regime = detect_regime(index_df, breadth=breadth_val)
+        market_bullish = is_buy_allowed(regime)
+        logger.info("Market regime: %s | BUY entries %s", regime, "ALLOWED" if market_bullish else "BLOCKED")
 
     # 6. Relative strength — always compute (needed for bear swing even in BEAR regime)
     rs_data = compute_rs_for_all(data, index_df)
