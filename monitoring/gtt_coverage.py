@@ -31,15 +31,20 @@ logging.basicConfig(
 logger = logging.getLogger("GTTCoverage")
 
 
-def _excluded_symbols() -> set:
-    """Symbols that intentionally carry no GTT stop: cash-park ETFs, legacy
-    IGNORE_SYMBOLS entries, and any manual/imported-origin DB position — the
-    strategy must never touch a stop the user placed themselves. docs/30."""
-    from config.settings import IGNORE_SYMBOLS
-    from strategy.defensive_portfolio import ALL_DEFENSIVE_SYMBOLS
-    from db.repository import load_positions
-    manual_symbols = {p.symbol for p in load_positions(status="OPEN") if p.origin != "strategy"}
-    return set(IGNORE_SYMBOLS) | set(ALL_DEFENSIVE_SYMBOLS) | manual_symbols
+def _protected_symbols() -> set:
+    """Symbols that are actually expected to carry a live GTT stop right now.
+
+    Stop-loss/trailing-stop GTTs were fully removed for regular strategy positions
+    on 2026-07-08 (portfolio/manager.py, signal-only exits now) — the only symbol
+    that still carries a protective GTT is SAFE_HAVEN_SYMBOL (GOLDBEES), which has
+    a static max-loss-floor GTT (strategy/defensive_portfolio.py). Everything else
+    (regular strategy stocks, LIQUIDBEES, manual/imported positions, IGNORE_SYMBOLS)
+    intentionally carries no GTT — checking them as NAKED is a false positive.
+    Previously this function excluded SAFE_HAVEN_SYMBOL by mistake (bundled into
+    ALL_DEFENSIVE_SYMBOLS) while leaving every regular stock unexcluded — the
+    inverse of correct, silently false-positiving on every ordinary holding."""
+    from config.settings import SAFE_HAVEN_SYMBOL
+    return {SAFE_HAVEN_SYMBOL}
 
 
 def check() -> int:
@@ -63,16 +68,16 @@ def check() -> int:
         logger.error("Could not fetch active GTT list — skipping audit to avoid false alerts.")
         return 1
 
-    excluded = _excluded_symbols()
+    protected = _protected_symbols()
     naked = []
     for pos in holdings:
-        if pos.quantity <= 0 or pos.symbol in excluded:
+        if pos.quantity <= 0 or pos.symbol not in protected:
             continue
         key = broker._resolve_instrument(pos.symbol)
         if key not in gtt_keys:
             naked.append(pos)
 
-    covered = len([p for p in holdings if p.quantity > 0 and p.symbol not in excluded])
+    covered = len([p for p in holdings if p.quantity > 0 and p.symbol in protected])
     if not naked:
         logger.info("GTT coverage OK — %d position(s) all protected.", covered)
         return 0

@@ -78,8 +78,7 @@ def _expected_price(pos, entry_price: float) -> float:
 def check() -> int:
     from broker.upstox import UpstoxBroker
     from db.repository import load_positions
-    from monitoring.gtt_coverage import _excluded_symbols
-    from config.settings import SAFE_HAVEN_SYMBOL
+    from monitoring.gtt_coverage import _protected_symbols
 
     try:
         broker = UpstoxBroker()
@@ -98,14 +97,14 @@ def check() -> int:
         logger.error("Could not fetch GTT list — skipping audit to avoid false alerts: %s", e)
         return 1
 
-    # GOLDBEES DOES carry a GTT (a static max-loss floor, see _expected_price) — unlike
-    # gtt_coverage.py's naked-position check, don't skip it here just because it's "defensive".
-    excluded = _excluded_symbols() - {SAFE_HAVEN_SYMBOL}
+    # Only SAFE_HAVEN_SYMBOL (GOLDBEES) still carries a live GTT — stop-loss/trailing-stop
+    # GTTs were removed for regular strategy positions on 2026-07-08 (signal-only exits).
+    protected = _protected_symbols()
     issues = []
     checked = 0
 
     for pos in positions:
-        if pos.symbol in excluded or pos.shares <= 0:
+        if pos.symbol not in protected or pos.shares <= 0:
             continue
         checked += 1
         key = broker._resolve_instrument(pos.symbol)
