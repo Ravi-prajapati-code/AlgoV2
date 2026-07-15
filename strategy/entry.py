@@ -5,6 +5,7 @@ from config.settings import (
     EXTENSION_CAP_PCT, BREAKOUT_PCT, ENTRY_MODE,
     MIN_DAILY_TURNOVER, ENTRY_EMA_MEDIUM, ENTRY_EMA_LONG,
     MACD_CONFIRM_ENABLED,
+    VOLUME_CONFIRM_ENABLED, VOLUME_CONFIRM_MIN_RATIO,
 )
 
 def check_entry(
@@ -85,6 +86,11 @@ def check_entry(
 
         if MACD_CONFIRM_ENABLED and not ind.get("macd_bullish", False):
             return False, "MACD not bullish"
+
+        if VOLUME_CONFIRM_ENABLED:
+            vol_ratio = float(ind.get("vol_ratio", 0))
+            if vol_ratio < VOLUME_CONFIRM_MIN_RATIO:
+                return False, f"Weak volume confirmation ({vol_ratio:.2f} < {VOLUME_CONFIRM_MIN_RATIO:.2f})"
 
     if ENTRY_MODE == "FULL":
         adx = float(ind.get("adx", 0))
