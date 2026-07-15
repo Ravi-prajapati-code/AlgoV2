@@ -36,7 +36,6 @@ from strategy.exit import initial_stops, check_exit_conditions
 from strategy.defensive_portfolio import (
     REGIME_SWITCH_DAYS, BULL_RECOVERY_DAYS, REBAL_DAYS, MIN_DEFENSIVE_HOLD_DAYS,
     ALL_DEFENSIVE_SYMBOLS, BEAR_SWING_RS_THRESHOLD, BEAR_SWING_SLOTS, BEAR_SWING_COOLDOWN_DAYS, GOLD_ETF,
-    REGIME_SIZE_MULT_BEAR,
     LIQUIDBEES, LIQUIDBEES_ENABLED, ENTRY_CONFIRM_DAYS,
     is_defensive_symbol, get_defensive_entries, compute_rebalance,
 )
@@ -46,7 +45,7 @@ from portfolio.sizer import calculate_shares_for_value
 from charges.calculator import buy_charges, net_pnl
 from config.settings import round_to_tick
 from runner.signal_output import write_signals, write_portfolio_state
-from config.settings import INITIAL_CAPITAL, MARKET_INDEX_SYMBOL, MAX_STOCK_ALLOCATION_PCT, GOLDBEES_PROFIT_EXIT_ONLY, GOLDBEES_MAX_LOSS_PCT
+from config.settings import INITIAL_CAPITAL, MARKET_INDEX_SYMBOL, MAX_STOCK_ALLOCATION_PCT, GOLDBEES_PROFIT_EXIT_ONLY, GOLDBEES_MAX_LOSS_PCT, REGIME_SIZE_MULT_BEAR
 from db.models import Position, Signal, Trade
 
 logging.basicConfig(
