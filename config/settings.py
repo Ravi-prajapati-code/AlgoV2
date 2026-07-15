@@ -117,11 +117,6 @@ TREND_GATE_200_ENABLED = os.getenv("TREND_GATE_200", "false").lower() in ("true"
 # ADX/SuperTrend already proven trend gates: MACD likely redundant, needs entry_attribution
 # isolation before this flag is ever flipped on for real.
 MACD_CONFIRM_ENABLED = os.getenv("MACD_CONFIRM_ENABLED", "false").lower() in ("true", "1", "yes")
-# Volume-confirmation entry gate (off by default — live unaffected). docs/27 D1: the
-# ranking form of institutional-volume was tested and rejected as null; this is the
-# untested pass/fail *gate* variant (breakout bar vol_ratio vs. average), never isolated.
-VOLUME_CONFIRM_ENABLED = os.getenv("VOLUME_CONFIRM_ENABLED", "false").lower() in ("true", "1", "yes")
-VOLUME_CONFIRM_MIN_RATIO = float(os.getenv("VOLUME_CONFIRM_MIN_RATIO", VOLUME_SPIKE_MULTIPLIER))
 # Entry trend-alignment gate periods (strategy/entry.py: close > EMA_MED and EMA_MED > EMA_LONG).
 # Sweepable for docs/31 follow-up EMA-period test — defaults match the corrected ema_50/ema_100.
 ENTRY_EMA_MEDIUM     = int(os.getenv("ENTRY_EMA_MEDIUM", "50"))
