@@ -236,3 +236,28 @@ markets that gets diluted to near-zero when averaged across the full 2022-2026 w
 included a broad multi-year rally most benchmarks captured better via beta than this strategy did).
 Worth testing directly as a hypothesis (does the edge correlate with realized index volatility /
 dispersion, not just calendar recency) before concluding either "no edge" or "edge confirmed."
+
+## Update 2026-07-15: dispersion hypothesis tested — NOT confirmed
+
+`scripts/dispersion_edge_test.py` sliced the same continuous 2022-01-01→today backtest into 17
+non-overlapping quarterly windows and computed, per window: strategy CAGR, Nifty Midcap 150 CAGR
+(the correct benchmark per `docs/16.5_Investment_Mandate.md`, not Nifty 50), excess CAGR, and
+cross-sectional stock-return dispersion (same formula already validated at
+`scripts/signal_regime_diagnostics.py:104`).
+
+Result: **no correlation between excess CAGR and dispersion** (Pearson r=-0.016, p=0.95; Spearman
+rho=+0.032, p=0.90 — both statistically indistinguishable from zero). The recency confound check
+came back equally null (excess CAGR vs plain window index: Pearson r=+0.077, p=0.77) — so this
+isn't "it's recency, not dispersion" either; at quarterly granularity neither variable explains
+the excess-CAGR series, which itself swings wildly window to window (-87pp to +61pp) with no
+visible pattern tied to either candidate driver. Full table in
+`outputs/dispersion_edge_test.csv`.
+
+Caveat: quarterly-window annualized CAGR is a high-variance statistic (each window is ~63 trading
+days, raised to a large power to annualize), so this doesn't rule out a dispersion relationship
+that only shows up at finer granularity or with a different performance metric (e.g. per-window
+Sharpe instead of CAGR) — but as tested, with the natural first-choice methodology, the hypothesis
+does not hold. Per the project's standing practice for tested-and-not-confirmed ideas, no sizing
+lever was built on top of this (see `docs/24_Rejected_Forever.md`'s convention) — the 2025-2026
+edge concentration documented above remains real but **unexplained**, not something to build a
+live parameter on.
