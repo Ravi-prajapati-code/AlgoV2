@@ -6,6 +6,15 @@ report computes CAPM beta, Jensen's alpha, tracking error, information ratio, an
 against three external benchmarks plus one internal one, using `scripts/benchmark_attribution.py`
 (run 2026-07-07).
 
+**STALE, see `## Update 2026-07-15` below**: several honesty-correcting fixes landed after the
+2026-07-07 run below (ATR/RSI Wilder's-EMA fix, universe threshold tightening 2000cr→4000cr /
+3cr→10cr, `MAX_POSITIONS=5`, idle-cash removal). A rerun shows materially weaker full-window numbers
+— the "clear alpha vs Nifty 50" conclusion in the original table and Bottom Line below **no longer
+holds over the full window**. A separate rerun restricted to `robustness_gate.py`'s TEST-only window
+(2025-01-01 → 2026-06-04) shows the opposite: a real, large edge over every benchmark **concentrated
+in that recent period specifically**. Read the original results below as historical record of the
+2026-07-07 methodology, then read the 2026-07-15 update for the current picture.
+
 **Inherited caveat (read `14_Universe_Verification_Report.md` first)**: the strategy return series
 below comes from the current 100-symbol universe applied to the full 2022-2026 backtest window,
 which is confirmed-unvalidated evidence per docs/14 — the sensitivity test there could not establish
@@ -154,6 +163,54 @@ way the three external ETF/index benchmarks are. Its result (-4.71pp excess retu
 as "the strategy's stock selection added negative value relative to owning the same universe passively,"
 not as commentary on the universe-construction bias itself.
 
+## Update 2026-07-15: rerun after intervening fixes, full-window edge gone, recent-window edge confirmed
+
+**[Fact]** `scripts/benchmark_attribution.py` rerun with `START=2022-01-01`, `END=2026-07-15` (same
+methodology as 2026-07-07, no code changes to the script itself). Full-window numbers are materially
+weaker than the 2026-07-07 table above:
+
+| vs. | Strategy CAGR | Benchmark CAGR | Excess | Sharpe (strat/bench) | Jensen's Alpha |
+|---|---|---|---|---|---|
+| Nifty 50 | +6.99% | +7.24% | -0.24pp | 0.11 / 0.10 | +1.50%/yr |
+| Nifty Midcap 150 (ETF proxy) | +11.55% | +20.97% | -9.41pp | 0.32 / 0.84 | -1.98%/yr |
+| Nifty 500 (ETF proxy) | +5.42% | +12.04% | -6.62pp | 0.04 / 0.43 | -2.39%/yr |
+| Equal-Weight Universe | +6.99% | +16.88% | -9.89pp | 0.11 / 0.67 | -4.17%/yr |
+
+The "clear alpha vs Nifty 50" finding is gone — strategy now sits at roughly parity with Nifty 50
+(-0.24pp) and clearly loses to Midcap150/Nifty500/the equal-weight universe on both raw CAGR and
+Sharpe. Attributed primarily to intervening honesty fixes landing since 2026-07-07 (ATR/RSI Wilder's-EMA
+correction, universe threshold tightening, `MAX_POSITIONS=5`, idle-cash removal) rather than a live
+regression — those fixes removed backtest-only inflation that the 2026-07-07 numbers never should have
+had. Not yet isolated which single fix drove most of the drop.
+
+**[Fact]** A second rerun restricted to `robustness_gate.py`'s exact TEST window (2025-01-01 →
+2026-06-04) — chosen to check whether the strategy has a real edge *concentrated in the recent
+period* rather than smeared thin across the full 2022-2026 window — shows the opposite picture:
+
+| vs. | Strategy CAGR | Benchmark CAGR | Excess | Beta | Jensen's Alpha | Up/Down Capture |
+|---|---|---|---|---|---|---|
+| Nifty 50 | +13.86% | -0.69% | +14.55pp | 0.59 | +12.07%/yr | 64.8% / 46.3% |
+| Nifty Midcap 150 | +13.86% | +4.47% | +9.39pp | — | +8.58%/yr | 54.5% / 45.8% |
+| Nifty 500 | +13.86% | +1.01% | +12.85pp | — | — | 60.2% / — |
+| Equal-Weight Universe | +13.86% | +0.77% | +13.09pp | — | — | — |
+
+Every benchmark was flat-to-slightly-down over this specific window (Nifty 50 itself CAGR'd -0.69%),
+so this is not the strategy riding a rising index — the index didn't rise. The strategy beat every
+benchmark by 9-15pp with lower beta (0.59) and down-capture meaningfully below up-capture (46% vs
+65% against Nifty 50), consistent with genuine stock-selection value in a flat, stock-picker's market
+rather than beta exposure.
+
+Caveats: (1) this window is exactly `robustness_gate.py`'s TEST split (N=93 trades) — small sample,
+one window, not an independent holdout chosen after the fact. (2) The strategy CAGR here (+13.86%)
+differs from `robustness_gate.py`'s own TEST-window CAGR (+16.61%) because this rerun slices returns
+out of one continuous 2022→2026 backtest (TEST period inherits whatever cash/position state carried
+over from the TRAIN period), whereas `robustness_gate.py` runs TEST as an isolated fresh-capital
+window — different accounting, same qualitative conclusion (index flat, strategy up double-digits).
+(3) Mechanistically plausible (flat index + dispersion across individual stocks is the ideal
+environment for a stock-selection strategy), so this reads as a real regime-dependent edge rather than
+a fluke — but it should not be read as "Gate 1 now passes" full-stop, since the full 2022-2026 window
+above still shows near-parity-to-loss against every benchmark except Nifty 50.
+
 ## Bottom line
 
 **[Opinion, High confidence] — revised 2026-07-07 after the risk-adjusted follow-up**: Gate 1 does
@@ -169,3 +226,13 @@ suggest, and weaker than an initial read of "low beta, positive alpha" alone wou
 concentration-risk explanation above is a plausible, untested lead — not a mitigating finding.
 See `16.5_Investment_Mandate.md` for how this changes the definition of success before proceeding to
 `17_Edge_Persistence.md`.
+
+**[Opinion, High confidence] — addendum 2026-07-15**: Gate 1 clears even less now on the full window
+— even the one clean win above (Nifty 50) has evaporated to roughly parity post-fixes. But the
+recent-window-only rerun shows a real, mechanistically-plausible edge over every benchmark
+concentrated in 2025-01→2026-06 specifically. Read together: this strategy does not have a
+demonstrated *persistent* edge across all conditions, but may have a real edge in flat/dispersed
+markets that gets diluted to near-zero when averaged across the full 2022-2026 window (which
+included a broad multi-year rally most benchmarks captured better via beta than this strategy did).
+Worth testing directly as a hypothesis (does the edge correlate with realized index volatility /
+dispersion, not just calendar recency) before concluding either "no edge" or "edge confirmed."
