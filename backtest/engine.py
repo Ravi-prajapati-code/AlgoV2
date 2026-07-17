@@ -21,6 +21,7 @@ from strategy.defensive_portfolio import (
     is_defensive_symbol, get_defensive_entries, compute_rebalance, GOLD_ETF,
     ROTATION_ENABLED, ROTATE_EXIT_RS, ROTATE_INTO_RS, ROTATE_MIN_GAP,
     RIDE_WINNER_ENABLED, RIDE_WINNER_GAP_PCT,
+    RIDE_WINNER_REQUIRE_GENUINE_ENABLED, RIDE_WINNER_LOSER_MAX_PCT, RIDE_WINNER_WINNER_MIN_PCT,
     SCORE_DROP_EXIT_ENABLED, SCORE_DROP_DAYS, is_score_declining,
 )
 
@@ -616,8 +617,13 @@ class BacktestEngine:
                         not_extended = (not ema20 or ema20 == 0 or (best_price - ema20) / ema20 <= 0.05)
                         has_room     = best_val < pv * MAX_STOCK_ALLOCATION_PCT
 
+                        genuine_ok = (
+                            not RIDE_WINNER_REQUIRE_GENUINE_ENABLED
+                            or (worst_pct <= RIDE_WINNER_LOSER_MAX_PCT
+                                and best_pct >= RIDE_WINNER_WINNER_MIN_PCT)
+                        )
                         if ((best_pct - worst_pct) >= RIDE_WINNER_GAP_PCT
-                                and has_room and not_extended
+                                and has_room and not_extended and genuine_ok
                                 and worst.symbol != best.symbol):
                             logger.info(f"  [RIDE] {worst.symbol} {worst_pct:+.1%} → {best.symbol} {best_pct:+.1%}")
                             _sell_position(worst, "RIDE_WINNER_OUT")
