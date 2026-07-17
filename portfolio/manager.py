@@ -20,6 +20,7 @@ from charges.calculator import net_pnl, buy_charges
 from broker.base import BaseBroker
 from config.settings import (
     INITIAL_CAPITAL, round_to_tick, MAX_OPEN_POSITIONS, SAFE_HAVEN_SYMBOL, SIZER_CASH_BUFFER_PCT,
+    SAFE_HAVEN_DD_BYPASS_ENABLED,
     GOLD_EQUAL_SLOT_SIZING, SAFE_HAVEN_ALLOCATION_PCT,
     MAX_STOCK_ALLOCATION_PCT, DRAWDOWN_REDUCE_SIZE_PCT, DRAWDOWN_REDUCE_TIER2_MULT, GTT_LIMIT_BUFFER_PCT,
     REPLACE_MIN_NEW_RS, REPLACE_MAX_HELD_RS, REPLACE_MIN_GAP, MIN_PROFIT_SOFT,
@@ -522,16 +523,18 @@ class PortfolioManager:
                         base_slot_cash *= 0.50
                         logger.info("[Risk] DD %.1f%% — slot size cut to 50%%", current_dd * 100)
                 for i in range(num_to_buy):
-                    # Check overall risk limits first
+                    sig = buy_signals[i]
+
+                    # Check overall risk limits first — safe-haven hedge entries
+                    # bypass the drawdown breaker (see portfolio/risk.py docstring).
                     allowed, reason = can_open_new_trades(
-                        self.new_trades_today, self.open_positions, 
-                        portfolio_val, self.peak_value
+                        self.new_trades_today, self.open_positions,
+                        portfolio_val, self.peak_value,
+                        bypass_drawdown=(sig.symbol == SAFE_HAVEN_SYMBOL and SAFE_HAVEN_DD_BYPASS_ENABLED),
                     )
                     if not allowed:
                         logger.warning(f"  [Risk] Skip buy: {reason}")
                         break
-
-                    sig = buy_signals[i]
 
                     # Feature 3: skip if RS rank has been falling for N consecutive days
                     if (SCORE_DROP_EXIT_ENABLED

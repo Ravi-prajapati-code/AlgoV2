@@ -125,6 +125,11 @@ ENTRY_EMA_LONG       = int(os.getenv("ENTRY_EMA_LONG", "100"))
 EXIT_TREND_EMA       = int(os.getenv("EXIT_TREND_EMA", "50"))
 EXIT_TREND_CONFIRM_DAYS = int(os.getenv("EXIT_TREND_CONFIRM_DAYS", "2"))
 DD_THROTTLE_DISABLED_ENABLED = os.getenv("DD_THROTTLE_DISABLED", "true").lower() in ("true", "1", "yes")
+# Exempt safe-haven hedge entries (GOLDBEES) from the drawdown circuit breaker.
+# Off by default — live unaffected until gate-tested. Rationale: the breaker
+# currently blocks the hedge exactly when drawdown is high, i.e. exactly when
+# it's needed most.
+SAFE_HAVEN_DD_BYPASS_ENABLED = os.getenv("SAFE_HAVEN_DD_BYPASS_ENABLED", "false").lower() in ("true", "1", "yes")
 # Entry Attribution Suite (docs/23_Assumption_Audit.md §XIV) — isolates which piece of the
 # entry gate creates edge. FULL = live behavior, unchanged. Test-only, live unaffected.
 ENTRY_MODE      = os.getenv("ENTRY_MODE", "FULL")

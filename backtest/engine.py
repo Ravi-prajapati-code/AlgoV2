@@ -41,7 +41,7 @@ from config.settings import (
     SLIPPAGE_FIXED_PCT, SLIPPAGE_MODEL, round_to_tick,
     MAX_OPEN_POSITIONS, EXECUTION_TIMES,
     RS_THRESHOLD, DRAWDOWN_KILL_SWITCH_PCT, DRAWDOWN_REDUCE_SIZE_PCT, DRAWDOWN_REDUCE_TIER2_MULT,
-    MACD_FAST, MACD_SLOW, MACD_SIGNAL, SAFE_HAVEN_SYMBOL,
+    MACD_FAST, MACD_SLOW, MACD_SIGNAL, SAFE_HAVEN_SYMBOL, SAFE_HAVEN_DD_BYPASS_ENABLED,
     MAX_STOCK_ALLOCATION_PCT, MAX_NEW_TRADES_PER_DAY, SIZER_CASH_BUFFER_PCT,
     GOLDBEES_PROFIT_EXIT_ONLY, GOLDBEES_MAX_LOSS_PCT, GOLD_EQUAL_SLOT_SIZING, SAFE_HAVEN_ALLOCATION_PCT,
     NEXT_DAY_CLOSE_FILL_ENABLED, REGIME_SMOOTHING_ENABLED,
@@ -727,9 +727,17 @@ class BacktestEngine:
                 available_slots = MAX_OPEN_POSITIONS - len(open_positions)
 
                 current_dd = (peak_value - portfolio_val) / peak_value if peak_value > 0 else 0.0
+                dd_breaker_active = current_dd >= DRAWDOWN_KILL_SWITCH_PCT
+                has_hedge_buy = SAFE_HAVEN_DD_BYPASS_ENABLED and any(
+                    s.symbol == SAFE_HAVEN_SYMBOL for s in buy_signals
+                )
 
+                # Safe-haven hedge entries bypass the drawdown breaker (mirrors
+                # portfolio/manager.py) — a hedge is meant to go on precisely
+                # when drawdown is high.
                 trades_ok, trades_reason = can_open_new_trades(
-                    new_trades_today, open_positions, portfolio_val, peak_value
+                    new_trades_today, open_positions, portfolio_val, peak_value,
+                    bypass_drawdown=has_hedge_buy,
                 )
 
                 # ── Rank replacement: evict weakest if a stronger candidate is waiting ──
@@ -787,7 +795,7 @@ class BacktestEngine:
                                 f"{best_cand.symbol} RS={best_cand.score:.0f}"
                             )
 
-                if available_slots > 0 and cash > (portfolio_val * 0.005) and current_dd < DRAWDOWN_KILL_SWITCH_PCT and trades_ok:
+                if available_slots > 0 and cash > (portfolio_val * 0.005) and (not dd_breaker_active or has_hedge_buy) and trades_ok:
                     num_to_buy = min(len(buy_signals), available_slots)
 
                     if num_to_buy > 0:
@@ -807,6 +815,11 @@ class BacktestEngine:
                                 logger.info(f"  [SKIP] Daily trade limit reached ({MAX_NEW_TRADES_PER_DAY})")
                                 break
                             sig = buy_signals[j]
+
+                            # Drawdown breaker is active but batch was let through for a
+                            # hedge entry — non-hedge buys stay blocked individually.
+                            if dd_breaker_active and sig.symbol != SAFE_HAVEN_SYMBOL:
+                                continue
 
                             # Skip if RS/composite rank has been falling for N consecutive
                             # days (mirrors portfolio/manager.py's buy-side SCORE_DROP_EXIT check)
