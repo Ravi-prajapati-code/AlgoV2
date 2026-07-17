@@ -113,6 +113,10 @@ EXTENSION_CAP_PCT    = float(os.getenv("EXTENSION_CAP_PCT", "0.15"))       # max
 BREAKOUT_PCT         = float(os.getenv("BREAKOUT_PCT", "0.05"))            # standard entry: within X of 20d high
 # 200-day EMA trend gate (off by default — live unaffected). Test-only refinement lever.
 TREND_GATE_200_ENABLED = os.getenv("TREND_GATE_200", "false").lower() in ("true", "1", "yes")
+# MACD bullish-crossover confirmation gate (off by default — live unaffected). Test-only:
+# ADX/SuperTrend already proven trend gates: MACD likely redundant, needs entry_attribution
+# isolation before this flag is ever flipped on for real.
+MACD_CONFIRM_ENABLED = os.getenv("MACD_CONFIRM_ENABLED", "false").lower() in ("true", "1", "yes")
 # Entry trend-alignment gate periods (strategy/entry.py: close > EMA_MED and EMA_MED > EMA_LONG).
 # Sweepable for docs/31 follow-up EMA-period test — defaults match the corrected ema_50/ema_100.
 ENTRY_EMA_MEDIUM     = int(os.getenv("ENTRY_EMA_MEDIUM", "50"))
@@ -120,7 +124,12 @@ ENTRY_EMA_LONG       = int(os.getenv("ENTRY_EMA_LONG", "100"))
 # TREND_BREAK exit period + consecutive-day confirmation (strategy/signals.py).
 EXIT_TREND_EMA       = int(os.getenv("EXIT_TREND_EMA", "50"))
 EXIT_TREND_CONFIRM_DAYS = int(os.getenv("EXIT_TREND_CONFIRM_DAYS", "2"))
-DD_THROTTLE_DISABLED_ENABLED = os.getenv("DD_THROTTLE_DISABLED", "false").lower() in ("true", "1", "yes")
+DD_THROTTLE_DISABLED_ENABLED = os.getenv("DD_THROTTLE_DISABLED", "true").lower() in ("true", "1", "yes")
+# Exempt safe-haven hedge entries (GOLDBEES) from the drawdown circuit breaker.
+# Off by default — live unaffected until gate-tested. Rationale: the breaker
+# currently blocks the hedge exactly when drawdown is high, i.e. exactly when
+# it's needed most.
+SAFE_HAVEN_DD_BYPASS_ENABLED = os.getenv("SAFE_HAVEN_DD_BYPASS_ENABLED", "false").lower() in ("true", "1", "yes")
 # Entry Attribution Suite (docs/23_Assumption_Audit.md §XIV) — isolates which piece of the
 # entry gate creates edge. FULL = live behavior, unchanged. Test-only, live unaffected.
 ENTRY_MODE      = os.getenv("ENTRY_MODE", "FULL")
@@ -129,9 +138,17 @@ ENTRY_MODE      = os.getenv("ENTRY_MODE", "FULL")
 # causal per-sector trailing-trade-return nudge to entry score. Off by default (weight=0).
 # Distinct from the rejected SECTOR_BLACKLIST (static, full-sample, hard exclusion): this is
 # continuous, trailing-window-only, no lookahead. Test-only, live unaffected while weight=0.
-SECTOR_DURABILITY_WEIGHT        = float(os.getenv("SECTOR_DURABILITY_WEIGHT", "0"))
+SECTOR_DURABILITY_WEIGHT        = float(os.getenv("SECTOR_DURABILITY_WEIGHT", "1.0"))
 SECTOR_DURABILITY_LOOKBACK_DAYS = int(os.getenv("SECTOR_DURABILITY_LOOKBACK_DAYS", "180"))
 SECTOR_DURABILITY_MIN_TRADES    = int(os.getenv("SECTOR_DURABILITY_MIN_TRADES", "5"))
+
+# Regime-conditional position sizing (trade_attribution 2026-07-14: BEAR-regime
+# entries WR 60%/+38.6k vs BULL-regime entries ~breakeven/-875 on 5.6x the trade
+# count) -- scales the per-slot cash by regime_at_entry, applied to base_slot_cash
+# before the MAX_STOCK_ALLOCATION_PCT cap. Both default 1.0 = no-op, byte-identical
+# to current baseline. Test-only until gated.
+REGIME_SIZE_MULT_BEAR = float(os.getenv("REGIME_SIZE_MULT_BEAR", "1.0"))
+REGIME_SIZE_MULT_BULL = float(os.getenv("REGIME_SIZE_MULT_BULL", "1.0"))
 
 # Rank replacement (backtest/engine.py "Execute Buys"): evict the weakest-RS held
 # position for a much stronger waiting candidate when the portfolio is full.
@@ -193,10 +210,20 @@ SAFE_HAVEN_SYMBOL           = "GOLDBEES.NS"
 SAFE_HAVEN_YIELD_ANNUAL     = 0.06         # Fallback 6% annual return if data missing
 GOLDBEES_PROFIT_EXIT_ONLY   = os.getenv("GOLDBEES_PROFIT_EXIT_ONLY", "false").lower() in ("true", "1", "yes")
 GOLDBEES_MAX_LOSS_PCT       = float(os.getenv("GOLDBEES_MAX_LOSS_PCT", "0.07"))  # cut GOLDBEES if loss exceeds this
-# Gate the BEAR-regime GOLDBEES buy on GOLDBEES's own trend (close > its EMA100),
-# instead of an unconditional buy the moment the index flips BEAR. When the
-# filter blocks entry, no signal fires and the slot stays in cash.
-GOLDBEES_TREND_FILTER_ENABLED = os.getenv("GOLDBEES_TREND_FILTER_ENABLED", "false").lower() in ("true", "1", "yes")
+
+# Safe-haven cash-parking cap as a fraction of portfolio value. Default 0.50 matches
+# current live behavior byte-for-byte. Test candidate: 0.70 (GOLD_EQUAL_SLOT_SIZING
+# gate-REJECTED 2026-07-14 showed shrinking this allocation hurts -- testing whether
+# growing it instead helps, since 50% cushion may be undersized for real BEAR drawdowns).
+SAFE_HAVEN_ALLOCATION_PCT  = float(os.getenv("SAFE_HAVEN_ALLOCATION_PCT", "0.40"))
+
+# Test-only, off by default: GOLDBEES currently gets a special-cased 50%-of-portfolio
+# cash-parking allocation that bypasses can_open_position's sector/correlation caps
+# entirely -- a different sizing philosophy than every other symbol's equal
+# base_slot_cash split. This makes GOLDBEES go through the exact same equal-slot
+# sizing and risk caps as any other candidate instead. Untested hypothesis, not a
+# known bug -- the 50% carve-out was a deliberate original design choice.
+GOLD_EQUAL_SLOT_SIZING      = os.getenv("GOLD_EQUAL_SLOT_SIZING", "false").lower() in ("true", "1", "yes")
 # ──────────────────────────────────────────────
 
 # ──────────────────────────────────────────────

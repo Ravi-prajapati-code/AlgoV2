@@ -21,6 +21,7 @@ from strategy.defensive_portfolio import (
     is_defensive_symbol, get_defensive_entries, compute_rebalance, GOLD_ETF,
     ROTATION_ENABLED, ROTATE_EXIT_RS, ROTATE_INTO_RS, ROTATE_MIN_GAP,
     RIDE_WINNER_ENABLED, RIDE_WINNER_GAP_PCT,
+    RIDE_WINNER_REQUIRE_GENUINE_ENABLED, RIDE_WINNER_LOSER_MAX_PCT, RIDE_WINNER_WINNER_MIN_PCT,
     SCORE_DROP_EXIT_ENABLED, SCORE_DROP_DAYS, is_score_declining,
 )
 
@@ -41,14 +42,15 @@ from config.settings import (
     SLIPPAGE_FIXED_PCT, SLIPPAGE_MODEL, round_to_tick,
     MAX_OPEN_POSITIONS, EXECUTION_TIMES,
     RS_THRESHOLD, DRAWDOWN_KILL_SWITCH_PCT, DRAWDOWN_REDUCE_SIZE_PCT, DRAWDOWN_REDUCE_TIER2_MULT,
-    MACD_FAST, MACD_SLOW, MACD_SIGNAL, SAFE_HAVEN_SYMBOL,
+    MACD_FAST, MACD_SLOW, MACD_SIGNAL, SAFE_HAVEN_SYMBOL, SAFE_HAVEN_DD_BYPASS_ENABLED,
     MAX_STOCK_ALLOCATION_PCT, MAX_NEW_TRADES_PER_DAY, SIZER_CASH_BUFFER_PCT,
-    GOLDBEES_PROFIT_EXIT_ONLY, GOLDBEES_MAX_LOSS_PCT, GOLDBEES_TREND_FILTER_ENABLED,
+    GOLDBEES_PROFIT_EXIT_ONLY, GOLDBEES_MAX_LOSS_PCT, GOLD_EQUAL_SLOT_SIZING, SAFE_HAVEN_ALLOCATION_PCT,
     NEXT_DAY_CLOSE_FILL_ENABLED, REGIME_SMOOTHING_ENABLED,
     REPLACE_MIN_NEW_RS, REPLACE_MAX_HELD_RS, REPLACE_MIN_GAP, MIN_PROFIT_SOFT,
     DD_THROTTLE_DISABLED_ENABLED,
     SECTOR_DURABILITY_WEIGHT, SECTOR_DURABILITY_LOOKBACK_DAYS, SECTOR_DURABILITY_MIN_TRADES,
     ENTRY_EMA_MEDIUM, ENTRY_EMA_LONG, EXIT_TREND_EMA,
+    REGIME_SIZE_MULT_BEAR, REGIME_SIZE_MULT_BULL,
 )
 
 logger = logging.getLogger(__name__)
@@ -262,12 +264,7 @@ class BacktestEngine:
                     open_positions = [p for p in open_positions if is_defensive_symbol(p.symbol)]
                     # Target 50% of total portfolio in GOLDBEES; top-up if already held
                     portfolio_val_now = cash + portfolio_invested_value(open_positions, prices)
-                    gold_ind = indicators.get(GOLD_ETF, {})
-                    gold_trend_ok = (not GOLDBEES_TREND_FILTER_ENABLED) or (
-                        gold_ind.get("close", 0) > gold_ind.get("ema_100", 0)
-                    )
-                    entries = get_defensive_entries(portfolio_val_now, prices, SLIPPAGE_FIXED_PCT,
-                                                     gold_trend_ok=gold_trend_ok)
+                    entries = get_defensive_entries(portfolio_val_now, prices, SLIPPAGE_FIXED_PCT)
                     for sym, shares_target, ep, weight in entries:
                         existing_pos = next((p for p in open_positions if p.symbol == sym), None)
                         if existing_pos:
@@ -453,7 +450,7 @@ class BacktestEngine:
                                 candidates.append((symbol, rs_rank, ind))
                         candidates.sort(key=lambda x: x[1], reverse=True)
 
-                        slot_cash = cash / BEAR_SWING_SLOTS
+                        slot_cash = (cash / BEAR_SWING_SLOTS) * REGIME_SIZE_MULT_BEAR
                         for symbol, rs_rank, ind in candidates[:bear_slots_free]:
                             ep = self._lagged_fill_price(symbol, i, all_dates, ind["close"], "buy")
                             slot_cash_capped = min(slot_cash, portfolio_val * MAX_STOCK_ALLOCATION_PCT)
@@ -620,8 +617,13 @@ class BacktestEngine:
                         not_extended = (not ema20 or ema20 == 0 or (best_price - ema20) / ema20 <= 0.05)
                         has_room     = best_val < pv * MAX_STOCK_ALLOCATION_PCT
 
+                        genuine_ok = (
+                            not RIDE_WINNER_REQUIRE_GENUINE_ENABLED
+                            or (worst_pct <= RIDE_WINNER_LOSER_MAX_PCT
+                                and best_pct >= RIDE_WINNER_WINNER_MIN_PCT)
+                        )
                         if ((best_pct - worst_pct) >= RIDE_WINNER_GAP_PCT
-                                and has_room and not_extended
+                                and has_room and not_extended and genuine_ok
                                 and worst.symbol != best.symbol):
                             logger.info(f"  [RIDE] {worst.symbol} {worst_pct:+.1%} → {best.symbol} {best_pct:+.1%}")
                             _sell_position(worst, "RIDE_WINNER_OUT")
@@ -731,9 +733,17 @@ class BacktestEngine:
                 available_slots = MAX_OPEN_POSITIONS - len(open_positions)
 
                 current_dd = (peak_value - portfolio_val) / peak_value if peak_value > 0 else 0.0
+                dd_breaker_active = current_dd >= DRAWDOWN_KILL_SWITCH_PCT
+                has_hedge_buy = SAFE_HAVEN_DD_BYPASS_ENABLED and any(
+                    s.symbol == SAFE_HAVEN_SYMBOL for s in buy_signals
+                )
 
+                # Safe-haven hedge entries bypass the drawdown breaker (mirrors
+                # portfolio/manager.py) — a hedge is meant to go on precisely
+                # when drawdown is high.
                 trades_ok, trades_reason = can_open_new_trades(
-                    new_trades_today, open_positions, portfolio_val, peak_value
+                    new_trades_today, open_positions, portfolio_val, peak_value,
+                    bypass_drawdown=has_hedge_buy,
                 )
 
                 # ── Rank replacement: evict weakest if a stronger candidate is waiting ──
@@ -791,7 +801,7 @@ class BacktestEngine:
                                 f"{best_cand.symbol} RS={best_cand.score:.0f}"
                             )
 
-                if available_slots > 0 and cash > (portfolio_val * 0.005) and current_dd < DRAWDOWN_KILL_SWITCH_PCT and trades_ok:
+                if available_slots > 0 and cash > (portfolio_val * 0.005) and (not dd_breaker_active or has_hedge_buy) and trades_ok:
                     num_to_buy = min(len(buy_signals), available_slots)
 
                     if num_to_buy > 0:
@@ -799,6 +809,7 @@ class BacktestEngine:
                         # portfolio/manager.py's live sizer (parity fix).
                         spendable = cash * (1.0 - SIZER_CASH_BUFFER_PCT)
                         base_slot_cash = spendable / available_slots
+                        base_slot_cash *= REGIME_SIZE_MULT_BULL
                         # Graduated size reduction under drawdown
                         if not DD_THROTTLE_DISABLED_ENABLED:
                             if current_dd >= DRAWDOWN_REDUCE_SIZE_PCT * DRAWDOWN_REDUCE_TIER2_MULT:
@@ -810,6 +821,11 @@ class BacktestEngine:
                                 logger.info(f"  [SKIP] Daily trade limit reached ({MAX_NEW_TRADES_PER_DAY})")
                                 break
                             sig = buy_signals[j]
+
+                            # Drawdown breaker is active but batch was let through for a
+                            # hedge entry — non-hedge buys stay blocked individually.
+                            if dd_breaker_active and sig.symbol != SAFE_HAVEN_SYMBOL:
+                                continue
 
                             # Skip if RS/composite rank has been falling for N consecutive
                             # days (mirrors portfolio/manager.py's buy-side SCORE_DROP_EXIT check)
@@ -824,8 +840,8 @@ class BacktestEngine:
                             atr = float(sig.indicators.get("atr", 0) or 0)
                             stops = initial_stops(exec_price, atr=atr)
 
-                            if sig.symbol == SAFE_HAVEN_SYMBOL:
-                                slot_cash = min(cash, portfolio_val * 0.50)
+                            if sig.symbol == SAFE_HAVEN_SYMBOL and not GOLD_EQUAL_SLOT_SIZING:
+                                slot_cash = min(cash, portfolio_val * SAFE_HAVEN_ALLOCATION_PCT)
                             else:
                                 slot_cash = min(base_slot_cash, portfolio_val * MAX_STOCK_ALLOCATION_PCT)
                                 alloc_ok, alloc_reason = can_open_position(
@@ -1041,26 +1057,29 @@ class BacktestEngine:
                 ema_entry_long = _ema_series(ENTRY_EMA_LONG)
                 ema_exit_trend = _ema_series(EXIT_TREND_EMA)
                 
-                # ATR
+                # ATR — Wilder's EMA, matches indicators/composite.py's live atr
+                # (docs/33: was a plain rolling mean here, silently different
+                # formula from live despite the same field name/downstream use).
                 tr = pd.concat([df['high'] - df['low'], (df['high'] - close.shift()).abs(), (df['low'] - close.shift()).abs()], axis=1).max(axis=1)
-                atr = tr.rolling(window=14).mean()
+                atr14 = tr.ewm(alpha=1/14, adjust=False).mean()
+                atr = atr14
 
                 # ADX (Wilder's — trend strength; <20 = sideways/chop)
                 h_diff   = df['high'] - df['high'].shift(1)
                 l_diff   = df['low'].shift(1) - df['low']
                 plus_dm  = pd.Series(np.where((h_diff > l_diff) & (h_diff > 0), h_diff, 0.0), index=df.index)
                 minus_dm = pd.Series(np.where((l_diff > h_diff) & (l_diff > 0), l_diff, 0.0), index=df.index)
-                atr14    = tr.ewm(alpha=1/14, adjust=False).mean()
                 plus_di  = 100 * plus_dm.ewm(alpha=1/14, adjust=False).mean() / atr14.replace(0, np.nan)
                 minus_di = 100 * minus_dm.ewm(alpha=1/14, adjust=False).mean() / atr14.replace(0, np.nan)
                 dx       = 100 * (plus_di - minus_di).abs() / (plus_di + minus_di).replace(0, np.nan)
                 adx_s    = dx.ewm(alpha=1/14, adjust=False).mean()
                 st_dir_s = compute_supertrend(df)["direction"]
-                
-                # RSI
+
+                # RSI — Wilder's EMA of gains/losses, matches indicators/composite.py's
+                # live rsi (docs/33: was a plain rolling mean here, same bug class as atr).
                 delta = close.diff()
-                gain = (delta.where(delta > 0, 0)).rolling(window=14).mean()
-                loss = (-delta.where(delta < 0, 0)).rolling(window=14).mean()
+                gain = (delta.where(delta > 0, 0)).ewm(alpha=1/14, adjust=False).mean()
+                loss = (-delta.where(delta < 0, 0)).ewm(alpha=1/14, adjust=False).mean()
                 rsi = 100 - (100 / (1 + gain / loss.replace(0, float("nan"))))
                 
                 # Turnover and volume ratio

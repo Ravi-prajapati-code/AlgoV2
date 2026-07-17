@@ -20,13 +20,17 @@ from charges.calculator import net_pnl, buy_charges
 from broker.base import BaseBroker
 from config.settings import (
     INITIAL_CAPITAL, round_to_tick, MAX_OPEN_POSITIONS, SAFE_HAVEN_SYMBOL, SIZER_CASH_BUFFER_PCT,
+    SAFE_HAVEN_DD_BYPASS_ENABLED,
+    GOLD_EQUAL_SLOT_SIZING, SAFE_HAVEN_ALLOCATION_PCT,
     MAX_STOCK_ALLOCATION_PCT, DRAWDOWN_REDUCE_SIZE_PCT, DRAWDOWN_REDUCE_TIER2_MULT, GTT_LIMIT_BUFFER_PCT,
     REPLACE_MIN_NEW_RS, REPLACE_MAX_HELD_RS, REPLACE_MIN_GAP, MIN_PROFIT_SOFT,
     MAX_NEW_TRADES_PER_DAY, DRAWDOWN_KILL_SWITCH_PCT, DD_THROTTLE_DISABLED_ENABLED,
+    REGIME_SIZE_MULT_BEAR, REGIME_SIZE_MULT_BULL,
 )
 from strategy.defensive_portfolio import (
     ROTATION_ENABLED, ROTATE_EXIT_RS, ROTATE_INTO_RS, ROTATE_MIN_GAP,
     RIDE_WINNER_ENABLED, RIDE_WINNER_GAP_PCT,
+    RIDE_WINNER_REQUIRE_GENUINE_ENABLED, RIDE_WINNER_LOSER_MAX_PCT, RIDE_WINNER_WINNER_MIN_PCT,
     SCORE_DROP_EXIT_ENABLED, SCORE_DROP_DAYS,
     is_defensive_symbol, is_score_declining,
 )
@@ -340,8 +344,13 @@ class PortfolioManager:
                 not_extended = (ema20 == 0 or (best_price - ema20) / ema20 <= 0.05)
                 has_room     = best_val < pv * MAX_STOCK_ALLOCATION_PCT
 
+                genuine_ok = (
+                    not RIDE_WINNER_REQUIRE_GENUINE_ENABLED
+                    or (worst_pct <= RIDE_WINNER_LOSER_MAX_PCT
+                        and best_pct >= RIDE_WINNER_WINNER_MIN_PCT)
+                )
                 if ((best_pct - worst_pct) >= RIDE_WINNER_GAP_PCT
-                        and has_room and not_extended
+                        and has_room and not_extended and genuine_ok
                         and worst.symbol != best.symbol):
                     logger.info(
                         f"  [RIDE] {worst.symbol} {worst_pct:+.1%} → {best.symbol} {best_pct:+.1%}"
@@ -509,6 +518,7 @@ class PortfolioManager:
                 # Reserve 5% buffer so charges don't cause order rejection
                 spendable = self.cash * (1.0 - SIZER_CASH_BUFFER_PCT)
                 base_slot_cash = spendable / max(available_slots, 1)
+                base_slot_cash *= REGIME_SIZE_MULT_BEAR if regime == "BEAR" else REGIME_SIZE_MULT_BULL
                 # Graduated size reduction under drawdown — mirrors backtest engine
                 current_dd = (self.peak_value - portfolio_val) / self.peak_value if self.peak_value > 0 else 0.0
                 if not DD_THROTTLE_DISABLED_ENABLED:
@@ -519,16 +529,18 @@ class PortfolioManager:
                         base_slot_cash *= 0.50
                         logger.info("[Risk] DD %.1f%% — slot size cut to 50%%", current_dd * 100)
                 for i in range(num_to_buy):
-                    # Check overall risk limits first
+                    sig = buy_signals[i]
+
+                    # Check overall risk limits first — safe-haven hedge entries
+                    # bypass the drawdown breaker (see portfolio/risk.py docstring).
                     allowed, reason = can_open_new_trades(
-                        self.new_trades_today, self.open_positions, 
-                        portfolio_val, self.peak_value
+                        self.new_trades_today, self.open_positions,
+                        portfolio_val, self.peak_value,
+                        bypass_drawdown=(sig.symbol == SAFE_HAVEN_SYMBOL and SAFE_HAVEN_DD_BYPASS_ENABLED),
                     )
                     if not allowed:
                         logger.warning(f"  [Risk] Skip buy: {reason}")
                         break
-
-                    sig = buy_signals[i]
 
                     # Feature 3: skip if RS rank has been falling for N consecutive days
                     if (SCORE_DROP_EXIT_ENABLED
@@ -560,8 +572,8 @@ class PortfolioManager:
                     stops = initial_stops(price, atr=atr)
 
                     # Safe haven: deploy up to 50% of portfolio value — limits drawdown from gold volatility
-                    if sig.symbol == SAFE_HAVEN_SYMBOL:
-                        max_safe_haven = portfolio_val * 0.50
+                    if sig.symbol == SAFE_HAVEN_SYMBOL and not GOLD_EQUAL_SLOT_SIZING:
+                        max_safe_haven = portfolio_val * SAFE_HAVEN_ALLOCATION_PCT
                         useable_cash = min(self.cash * (1.0 - SIZER_CASH_BUFFER_PCT), max_safe_haven)
                         target_val = useable_cash - buy_charges(useable_cash).total
                         shares = calculate_shares_for_value(target_val, price)
@@ -574,7 +586,7 @@ class PortfolioManager:
 
                     if shares > 0:
                         # Safe haven bypasses stock/sector caps — it's a cash parking mechanism
-                        if sig.symbol != SAFE_HAVEN_SYMBOL:
+                        if sig.symbol != SAFE_HAVEN_SYMBOL or GOLD_EQUAL_SLOT_SIZING:
                             val = position_value(shares, price)
                             ok, reason = can_open_position(
                                 sig.symbol, val, portfolio_val,

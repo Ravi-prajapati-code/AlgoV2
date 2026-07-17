@@ -50,6 +50,15 @@ ROTATE_MIN_GAP           = float(os.getenv("ROTATE_MIN_GAP", "25"))           # 
 RIDE_WINNER_ENABLED      = os.getenv("RIDE_WINNER_ENABLED", "1") == "1"       # sell weakest position when winner diverges strongly
 RIDE_WINNER_GAP_PCT      = float(os.getenv("RIDE_WINNER_GAP_PCT", "0.15"))    # min return gap (winner vs worst) to trigger ride-winner
 
+# Off by default — untested variant. Live's gap check alone can fire when
+# "worst" is just a less-bad loser (e.g. worst=-30%, best=-10%, gap=20%),
+# funding a position that isn't actually profitable. Requires the sold leg
+# to be a genuine loser and the funded leg a genuine winner, not just the
+# better of two relative performers.
+RIDE_WINNER_REQUIRE_GENUINE_ENABLED = os.getenv("RIDE_WINNER_REQUIRE_GENUINE_ENABLED", "0") == "1"
+RIDE_WINNER_LOSER_MAX_PCT = float(os.getenv("RIDE_WINNER_LOSER_MAX_PCT", "-0.03"))   # worst must be losing at least this much
+RIDE_WINNER_WINNER_MIN_PCT = float(os.getenv("RIDE_WINNER_WINNER_MIN_PCT", "0.03"))  # best must be gaining at least this much
+
 SCORE_DROP_EXIT_ENABLED  = os.getenv("SCORE_DROP_EXIT_ENABLED", "1") == "1"   # exit held position on sustained RS rank decline
 SCORE_DROP_DAYS          = int(os.getenv("SCORE_DROP_DAYS", "5"))              # consecutive days of RS decline to trigger exit
 BEAR_SWING_COOLDOWN_DAYS = int(os.getenv("BEAR_SWING_COOLDOWN_DAYS", "0"))   # 0=disabled; set >0 to prevent re-entering same stock too soon after bear-swing exit (costs ~4pp CAGR)
@@ -64,20 +73,16 @@ LIQUIDBEES_TARGET_WEIGHT = 0.45
 ALL_DEFENSIVE_SYMBOLS = [GOLD_ETF, LIQUIDBEES]
 
 
-def build_target_weights(gold_trend_ok: bool = True) -> dict:
+def build_target_weights() -> dict:
     """Return {symbol: target_weight} for the defensive portfolio.
     50% gold, 45% LIQUIDBEES (liquid cash park), 5% cash buffer.
     SAFE_HAVEN_ENABLED=false → empty dict (pure bear swing, no GOLDBEES).
     LIQUIDBEES_ENABLED=0 falls back to original 50% gold + 50% cash.
-    gold_trend_ok=False (with GOLDBEES_TREND_FILTER_ENABLED) drops the gold
-    leg entirely — stays in cash rather than buying gold that isn't trending up.
     """
-    from config.settings import SAFE_HAVEN_ENABLED, GOLDBEES_TREND_FILTER_ENABLED
+    from config.settings import SAFE_HAVEN_ENABLED
     if not SAFE_HAVEN_ENABLED:
         return {}
-    weights = {}
-    if gold_trend_ok or not GOLDBEES_TREND_FILTER_ENABLED:
-        weights[GOLD_ETF] = 0.50
+    weights = {GOLD_ETF: 0.50}
     if LIQUIDBEES_ENABLED:
         weights[LIQUIDBEES] = LIQUIDBEES_TARGET_WEIGHT
     return weights
@@ -101,8 +106,7 @@ def is_score_declining(symbol: str, score_history: dict, min_days: int) -> bool:
     return all(recent[i] > recent[i + 1] for i in range(len(recent) - 1))
 
 
-def get_defensive_entries(portfolio_val: float, prices: dict, slippage_pct: float = 0.001,
-                           gold_trend_ok: bool = True) -> list:
+def get_defensive_entries(portfolio_val: float, prices: dict, slippage_pct: float = 0.001) -> list:
     """
     Build Position objects for the defensive allocation.
     Returns list of (symbol, shares, exec_price, weight).
@@ -110,7 +114,7 @@ def get_defensive_entries(portfolio_val: float, prices: dict, slippage_pct: floa
     from config.settings import round_to_tick
     from charges.calculator import buy_charges
 
-    weights = build_target_weights(gold_trend_ok)
+    weights = build_target_weights()
     entries = []
     for sym, weight in weights.items():
         price = prices.get(sym)
