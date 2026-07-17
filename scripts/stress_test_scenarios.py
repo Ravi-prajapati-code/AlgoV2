@@ -38,9 +38,21 @@ sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
 from config.settings import MARKET_INDEX_SYMBOL
 from data.universe import get_all_symbols
+from strategy.defensive_portfolio import ALL_DEFENSIVE_SYMBOLS
 from db import repository as repo
 
 SCRATCH_DIR = "outputs/stress_test_scratch"
+
+# Empirically calibrated from GOLDBEES.NS vs Nifty 50 real cached history
+# (2017-2026, db/trading.db): daily-return correlation ~0.02 (effectively
+# uncorrelated); on Nifty's worst 5% days gold averaged +0.08%/day vs
+# Nifty's -2.46%/day. Before this fix, defensive symbols were fed the exact
+# same crash macro as every equity, so synthetic "gold" crashed in lockstep
+# with the market and tripped its own MAX_LOSS floor for reasons that never
+# happen with real gold data — silently preventing every stress scenario
+# from ever exercising a real hedge re-entry-during-drawdown scenario.
+DEFENSIVE_DAILY_MEAN = 0.0008
+DEFENSIVE_DAILY_STD = 0.0103
 
 METRIC_RE = {
     "cagr":   re.compile(r"CAGR\s*:\s*([+-]?[\d.]+)%"),
@@ -144,9 +156,16 @@ def populate_scratch_db(scratch_path: str, history: dict, scenario: dict, rng: n
         start = last_date + timedelta(days=1)
 
         sym_rng = np.random.default_rng(rng.integers(0, 2**32 - 1))
-        noise_std = scenario["noise_std"] * (0.3 if symbol == MARKET_INDEX_SYMBOL else 1.0)
+        if symbol in ALL_DEFENSIVE_SYMBOLS:
+            # Safe-haven assets don't ride the equity crash macro — see
+            # DEFENSIVE_DAILY_* constants above.
+            sym_macro = np.full(len(macro), DEFENSIVE_DAILY_MEAN)
+            sym_noise_std = DEFENSIVE_DAILY_STD
+        else:
+            sym_macro = macro
+            sym_noise_std = scenario["noise_std"] * (0.3 if symbol == MARKET_INDEX_SYMBOL else 1.0)
         tail = synth_tail(float(last_row["close"]), float(last_row["volume"]),
-                           macro, noise_std, sym_rng, start)
+                           sym_macro, sym_noise_std, sym_rng, start)
         repo.save_ohlcv(symbol, tail)
 
         if tail_start is None:
