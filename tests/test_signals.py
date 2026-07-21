@@ -103,10 +103,28 @@ class TestEntryConditions:
 
 
 class TestExitConditions:
-    def test_stop_loss_does_not_trigger(self):
-        """Hard stop-loss removed — only system sell signals exit positions."""
-        pos = _make_position(stop_loss=94.0)
-        ok, reason = check_exit_conditions(pos, 93.0, rs_rank=100)
+    def test_hard_stop_loss_triggers(self, monkeypatch):
+        # REJECTED via robustness_gate 2026-07-21 (docs/24) -- off by default.
+        # Mechanism still covered here in case it's revisited at a wider threshold.
+        monkeypatch.setattr("strategy.exit.HARD_STOP_LOSS_ENABLED", True)
+        # entry 100, 15% threshold -> stop at 85. 84 is a 16% loss, should trigger.
+        pos = _make_position(entry_price=100.0)
+        ok, reason = check_exit_conditions(pos, 84.0, rs_rank=100)
+        assert ok is True
+        assert "HARD_STOP_LOSS" in reason
+
+    def test_hard_stop_loss_does_not_trigger_above_threshold(self, monkeypatch):
+        monkeypatch.setattr("strategy.exit.HARD_STOP_LOSS_ENABLED", True)
+        # 90 is a 10% loss, under the 15% threshold -> should not trigger on its own.
+        pos = _make_position(entry_price=100.0)
+        ok, reason = check_exit_conditions(pos, 90.0, rs_rank=100, indicators={"rsi": 70})
+        assert ok is False
+        assert reason == ""
+
+    def test_hard_stop_loss_disabled_by_default(self):
+        # 30% loss would trip the 15% threshold if enabled -- confirms it's off.
+        pos = _make_position(entry_price=100.0)
+        ok, reason = check_exit_conditions(pos, 70.0, rs_rank=100, indicators={"rsi": 70})
         assert ok is False
         assert reason == ""
 
@@ -152,7 +170,8 @@ class TestExitConditions:
 
 
 class TestInitialStops:
-    def test_stop_loss_disabled(self):
+    def test_stop_loss_disabled_by_default(self):
+        # REJECTED via robustness_gate 2026-07-21 (docs/24) -- off by default.
         stops = initial_stops(100.0)
         assert stops["stop_loss"] == 0.0
 

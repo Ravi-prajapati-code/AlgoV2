@@ -2,13 +2,30 @@ import os
 from typing import Tuple
 from db.models import Position
 
+# Hard stop-loss: tried 2026-07-21 as a pure signal exit (checked once daily
+# against the close, in check_exit_conditions) -- NOT a broker-side GTT/resting
+# stop order, so it doesn't reintroduce the GTT-desync risk that got the old
+# hard stop removed (see live_incident_20260701_gtt_cancel,
+# live_bug_trailing_stop_not_persisted). REJECTED via robustness_gate at 15%,
+# see docs/24_Rejected_Forever.md -- TRAIN CAGR +27.47%->+17.63%, FULL
+# +22.77%->+11.45%, new train/test instability (Sharpe gap widens). TEST window
+# and all 4 stress scenarios were byte-identical baseline vs candidate (stop
+# never fired there) -- the damage is concentrated entirely in TRAIN, where
+# positions that breach -15% intraday apparently recover before MOMENTUM_DECAY
+# would have exited them; the hard stop locks in losses the existing
+# signal-based exit would have ridden out. Off by default; kept in case a wider
+# threshold is worth testing later.
+HARD_STOP_LOSS_ENABLED = os.getenv("HARD_STOP_LOSS_ENABLED", "false").lower() in ("true", "1", "yes")
+HARD_STOP_LOSS_PCT     = float(os.getenv("HARD_STOP_LOSS_PCT", "15")) / 100
+
 def initial_stops(price: float, atr: float = 0) -> dict:
     """
-    Stop-loss, trailing-stop, and profit-ceiling are no longer used for exits —
-    positions close only on system sell signals (see check_exit_conditions).
+    Trailing-stop and profit-ceiling are not used for exits. Hard stop-loss
+    (see HARD_STOP_LOSS_ENABLED) is off by default -- REJECTED, docs/24.
     """
+    stop_loss = price * (1 - HARD_STOP_LOSS_PCT) if HARD_STOP_LOSS_ENABLED else 0.0
     return {
-        "stop_loss":     0.0,
+        "stop_loss":     stop_loss,
         "take_profit":   0.0,
         "trailing_stop": 0.0,
         "peak_price":    price,
@@ -46,6 +63,14 @@ def check_exit_conditions(pos: Position, current_price: float, rs_rank: float = 
     # and the one point where it did bind independently (65) hurt crash-recovery
     # capture with no offsetting benefit. rs_rank kept in the signature for caller
     # compatibility; unused here now.
+
+    # Hard stop-loss — tail protection, checked ahead of everything else.
+    # EOD-only (no resting broker order): a position can still gap past this
+    # intraday and only exit at the next close that confirms the breach.
+    if HARD_STOP_LOSS_ENABLED and pos.entry_price > 0:
+        loss = (pos.entry_price - current_price) / pos.entry_price
+        if loss >= HARD_STOP_LOSS_PCT:
+            return True, f"HARD_STOP_LOSS ({loss:.1%} below entry)"
 
     rsi = indicators.get("rsi", 100) if indicators else 100
 
