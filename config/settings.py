@@ -132,7 +132,7 @@ DD_THROTTLE_DISABLED_ENABLED = os.getenv("DD_THROTTLE_DISABLED", "true").lower()
 SAFE_HAVEN_DD_BYPASS_ENABLED = os.getenv("SAFE_HAVEN_DD_BYPASS_ENABLED", "false").lower() in ("true", "1", "yes")
 # Entry Attribution Suite (docs/23_Assumption_Audit.md §XIV) — isolates which piece of the
 # entry gate creates edge. FULL = live behavior, unchanged. Test-only, live unaffected.
-ENTRY_MODE      = os.getenv("ENTRY_MODE", "FULL")
+ENTRY_MODE      = os.getenv("ENTRY_MODE", "PURE_RS")
 
 # Sector durability soft score (docs/25_Path_To_Consistent_Profit.md §5) — adds a rolling,
 # causal per-sector trailing-trade-return nudge to entry score. Off by default (weight=0).

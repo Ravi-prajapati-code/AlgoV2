@@ -150,7 +150,7 @@ def generate_signals(
     # baked into the `rs_rank` value itself, since that becomes `Signal.score`.
     rank_rng = random.Random(f"{ENTRY_MODE_SEED}:{today.toordinal()}")
 
-    candidates = []
+    prelim = []
     for symbol, ind in indicators.items():
         if symbol in held_symbols or symbol in IGNORE_SYMBOLS or symbol in BLOCKED_SYMBOLS:
             continue
@@ -168,24 +168,65 @@ def generate_signals(
             check_ind, symbol=symbol, regime=regime,
             index_confirming=index_confirming
         )
-
         if qualified:
-            if ENTRY_MODE == "REVERSE_RS":
-                score = -check_ind.get('rs_rank', 0)
-            elif ENTRY_MODE in ("RANDOM_ALL", "RANDOM_ELIGIBLE"):
-                score = rank_rng.random()
-            elif ENTRY_MODE == "PURE_ADX_BREAKOUT":
-                score = ind.get('adx', 0)
-            else:  # FULL, PURE_RS, SHUFFLE_RS
-                score = check_ind.get('rs_rank', 0)
-            if SECTOR_DURABILITY_WEIGHT and sector_durability:
-                score += SECTOR_DURABILITY_WEIGHT * sector_durability.get(get_sector(symbol), 0.0)
-            candidates.append({
-                "symbol": symbol,
-                "rs_rank": score,
-                "reason": gate_reason,
-                "indicators": ind
-            })
+            prelim.append((symbol, check_ind, ind, gate_reason))
+
+    # trade_attribution.py 2026-07-21: across 385 real backtest trades, entry-day
+    # rs_rank/adx/vol_ratio don't predict pnl_pct directly (all |rho|<0.1) but
+    # ema20/50_dist_pct and dist_from_high20d_pct predict hold_days instead
+    # (rho 0.34-0.42, p<0.0001) -- and hold_days predicts pnl_pct strongly
+    # (pearson 0.525, p<0.0001; P(hold_days>=31) jumps 4-12x in this composite's
+    # top quintile vs the other four). Ranks candidates by survival/duration
+    # likelihood rather than return-prediction, since return isn't predictable
+    # at entry here but duration is, and duration is what MOMENTUM_DECAY (RSI
+    # exit, no grace period) actually gates. NOT yet validated via
+    # robustness_gate -- same "don't act on live" bar as REVERSE_RS/
+    # PURE_ADX_BREAKOUT, see docs/24_Rejected_Forever.md.
+    survival_score = {}
+    if ENTRY_MODE == "SURVIVAL_RANK" and prelim:
+        raw = {}
+        for symbol, _, ind, _ in prelim:
+            ema20, ema50, high20d = ind.get('ema_20', 0), ind.get('ema_50', 0), ind.get('high_20d', 0)
+            close = ind.get('close', 0)
+            raw[symbol] = (
+                (close - ema20) / ema20 * 100 if ema20 else 0,
+                (close - ema50) / ema50 * 100 if ema50 else 0,
+                (close - high20d) / high20d * 100 if high20d else 0,
+            )
+
+        def _pct_rank(values):
+            order = sorted(range(len(values)), key=lambda i: values[i])
+            ranks = [0.0] * len(values)
+            for rank, i in enumerate(order):
+                ranks[i] = (rank + 1) / len(values) * 100
+            return ranks
+
+        syms = list(raw.keys())
+        e20_r = _pct_rank([raw[s][0] for s in syms])
+        e50_r = _pct_rank([raw[s][1] for s in syms])
+        dh_r  = _pct_rank([raw[s][2] for s in syms])
+        survival_score = {s: (e20_r[i] + e50_r[i] + dh_r[i]) / 3 for i, s in enumerate(syms)}
+
+    candidates = []
+    for symbol, check_ind, ind, gate_reason in prelim:
+        if ENTRY_MODE == "REVERSE_RS":
+            score = -check_ind.get('rs_rank', 0)
+        elif ENTRY_MODE in ("RANDOM_ALL", "RANDOM_ELIGIBLE"):
+            score = rank_rng.random()
+        elif ENTRY_MODE == "PURE_ADX_BREAKOUT":
+            score = ind.get('adx', 0)
+        elif ENTRY_MODE == "SURVIVAL_RANK":
+            score = survival_score.get(symbol, 0)
+        else:  # FULL, PURE_RS, SHUFFLE_RS
+            score = check_ind.get('rs_rank', 0)
+        if SECTOR_DURABILITY_WEIGHT and sector_durability:
+            score += SECTOR_DURABILITY_WEIGHT * sector_durability.get(get_sector(symbol), 0.0)
+        candidates.append({
+            "symbol": symbol,
+            "rs_rank": score,
+            "reason": gate_reason,
+            "indicators": ind
+        })
 
     candidates.sort(key=lambda x: x["rs_rank"], reverse=True)
 

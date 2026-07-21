@@ -155,7 +155,7 @@ def cmd_backtest(args):
         # live backfill attempt). Drop such symbols from this run instead
         # of hard-failing the whole gate (docs/29 Rule 1 item 3 follow-up).
         from data.fetcher import filter_symbols_with_insufficient_history
-        symbols = filter_symbols_with_insufficient_history(symbols, warmup_start)
+        symbols = filter_symbols_with_insufficient_history(symbols, warmup_start - timedelta(days=30))
     data     = fetch_all(symbols, lookback_days=lookback, start=warmup_start, end=end)
 
     print(f"Fetching market index {MARKET_INDEX_SYMBOL}…")

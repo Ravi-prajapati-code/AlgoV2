@@ -18,6 +18,9 @@ strategy/entry.py and strategy/signals.py for the mode implementations):
   SHUFFLE_RS         same gates/ranking as FULL, but RS values permuted across symbols
   PURE_RS            RS gate + ranking only, trend/ADX/breakout gate skipped
   PURE_ADX_BREAKOUT  trend/ADX/breakout gate only, RS gate skipped, ranked by ADX
+  SURVIVAL_RANK      same gates as FULL, ranked by trade_attribution.py's 2026-07-21
+                     survival composite (EMA20/50 extension + dist-from-20d-high
+                     percentile avg) instead of RS -- see strategy/signals.py
 
 RANDOM_ALL, RANDOM_ELIGIBLE and SHUFFLE_RS involve a seeded RNG -- each is run
 across several seeds and averaged to separate real effect from noise.
@@ -39,7 +42,7 @@ sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
 from scripts.out_of_sample_validator import DEFAULT_HIST_START, run_window
 
-MODES = ["FULL", "RANDOM_ALL", "RANDOM_ELIGIBLE", "REVERSE_RS", "SHUFFLE_RS", "PURE_RS", "PURE_ADX_BREAKOUT"]
+MODES = ["FULL", "RANDOM_ALL", "RANDOM_ELIGIBLE", "REVERSE_RS", "SHUFFLE_RS", "PURE_RS", "PURE_ADX_BREAKOUT", "SURVIVAL_RANK"]
 RANDOM_MODES = {"RANDOM_ALL", "RANDOM_ELIGIBLE", "SHUFFLE_RS"}
 SEEDS = [42, 7, 123]
 

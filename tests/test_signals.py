@@ -88,7 +88,10 @@ class TestEntryConditions:
         ok, _ = check_entry(_make_ind(rs_rank=60.0))
         assert ok is False
 
-    def test_trend_not_aligned_fails(self):
+    def test_trend_not_aligned_fails(self, monkeypatch):
+        # Trend/ADX/breakout gate is skipped under the live default (PURE_RS) —
+        # pin FULL to test that gate specifically.
+        monkeypatch.setattr("strategy.entry.ENTRY_MODE", "FULL")
         # Break alignment: price < ema_20
         ok, _ = check_entry(_make_ind(close=90.0, ema_20=98.0))
         assert ok is False
