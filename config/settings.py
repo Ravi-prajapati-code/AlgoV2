@@ -132,7 +132,7 @@ DD_THROTTLE_DISABLED_ENABLED = os.getenv("DD_THROTTLE_DISABLED", "true").lower()
 SAFE_HAVEN_DD_BYPASS_ENABLED = os.getenv("SAFE_HAVEN_DD_BYPASS_ENABLED", "false").lower() in ("true", "1", "yes")
 # Entry Attribution Suite (docs/23_Assumption_Audit.md §XIV) — isolates which piece of the
 # entry gate creates edge. FULL = live behavior, unchanged. Test-only, live unaffected.
-ENTRY_MODE      = os.getenv("ENTRY_MODE", "FULL")
+ENTRY_MODE      = os.getenv("ENTRY_MODE", "PURE_RS")
 
 # Sector durability soft score (docs/25_Path_To_Consistent_Profit.md §5) — adds a rolling,
 # causal per-sector trailing-trade-return nudge to entry score. Off by default (weight=0).
@@ -237,8 +237,8 @@ ML_MODEL_DIR            = "ml/models"
 # DATA
 # ──────────────────────────────────────────────
 PARTIAL_REGIME_MIN_CANDLES = 50       # Minimum candles for PARTIAL regime trading
-LOOKBACK_DAYS           = 500         # Days of OHLCV history for indicators; matches EMA_WARMUP_DAYS for EMA(150) convergence
-EMA_WARMUP_DAYS         = 500         # Days needed for EMA(150) to converge (3× span); used on first fetch
+LOOKBACK_DAYS           = 730         # Days of OHLCV history for indicators (2yr); matches EMA_WARMUP_DAYS for EMA(150) convergence
+EMA_WARMUP_DAYS         = 730         # Days needed for EMA(150) to converge (2yr, >3x span); used on first fetch
 # DB_PATH_OVERRIDE lets isolated tooling (e.g. scripts/stress_test_scenarios.py)
 # point the whole app at a scratch DB via subprocess env, without ever touching
 # the real db/trading.db — same per-deploy-override pattern as everything else here.
