@@ -634,8 +634,12 @@ class PortfolioManager:
 
                             # Stop-loss/trailing-stop GTT removed — exit is signal-only now.
 
-                            # Add position locally so subsequent signals see correct slot count
-                            # (broker sync will reconcile shares/price on next run)
+                            # Add position locally so subsequent signals see correct slot count,
+                            # and persist immediately (origin="strategy" by default) — waiting on
+                            # next-run broker sync left a same-day window where get_last_position()
+                            # finds no prior row and misclassifies the fill as origin="manual" on
+                            # sync, permanently excluding it from exit evaluation (signals.py:41).
+                            # Next-run sync still reconciles shares/price if the fill estimate drifts.
                             provisional_pos = Position(
                                 symbol=sig.symbol, sector=sig.indicators.get("sector", "Unknown"),
                                 entry_date=today, entry_price=price, shares=shares,
@@ -645,8 +649,9 @@ class PortfolioManager:
                             )
                             self.cash -= (shares * price) + buy_charges(shares * price).total
                             self.open_positions.append(provisional_pos)
+                            repo.save_position(provisional_pos)
                             self.new_trades_today += 1
-                            continue  # DB position saved by broker sync on next run
+                            continue
 
                         # ── 2. Local State Update (Paper Trading Only) ──
                         alloc_display = useable_cash if sig.symbol == SAFE_HAVEN_SYMBOL else slot_cash
