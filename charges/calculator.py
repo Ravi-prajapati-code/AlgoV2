@@ -1,14 +1,29 @@
 """
 Trading charges calculator — Upstox Equity Delivery (NSE).
 
-Upstox equity delivery charges (as of 2024):
-  - Brokerage:       ₹0  (Upstox free delivery)
-  - STT:             0.1% on sell side only
+E6 (docs/26 Portfolio Truth Audit): verified 2026-07-22 against Upstox's live
+GET /v2/charges/brokerage API on a real account trade (CEMPRO.NS, 18 shares
+@ Rs.1637.90) -- two assumptions below were wrong and are now corrected:
+  - Brokerage was assumed Rs.0 ("free delivery" marketing claim); this
+    account's real plan charges min(2.5% of trade value, Rs.30) per leg,
+    confirmed across 3 trade sizes (Rs.1,000/Rs.10,000/Rs.50,000). At this
+    system's typical trade sizes (tens of thousands+) the Rs.30 cap binds
+    almost every time.
+  - STT was assumed sell-side only; the live API confirms 0.1% STT is
+    charged on the BUY leg too (Rs.29.48 on a Rs.29,482.20 buy -- exact
+    match).
+Previously the model understated real per-trade cost by roughly half (buy
+leg: ~Rs.5.49 modeled vs Rs.70.41 real for the CEMPRO trade) -- every
+reported backtest/live net P&L number to date has been mildly optimistic.
+
+Upstox equity delivery charges (as of 2026-07-22, this account's plan):
+  - Brokerage:       min(2.5% of trade value, Rs.30) per leg
+  - STT:             0.1% on BOTH buy and sell
   - NSE Exchange:    0.00297% both sides
   - SEBI:            0.0001% both sides
   - GST:             18% on (brokerage + exchange + SEBI charges)
-  - Stamp Duty:      0.015% on buy side only (capped at ₹1500/instrument)
-  - DP Charges:      ₹18.5 flat per scrip per sell day (CDSL debit)
+  - Stamp Duty:      0.015% on buy side only (capped at Rs.1500/instrument)
+  - DP Charges:      Rs.18.5 flat per scrip per sell day (CDSL debit)
 
 All rates are per-transaction (per order), not per share.
 """
@@ -17,14 +32,15 @@ from dataclasses import dataclass
 
 
 # ── Upstox NSE Delivery rates ─────────────────────────────────────────────────
-BROKERAGE_RATE       = 0.0           # 0% for equity delivery
-STT_SELL_RATE        = 0.001         # 0.1% on sell value
+BROKERAGE_RATE       = 0.025         # 2.5% of trade value per leg, capped below
+BROKERAGE_CAP        = 30.0          # Rs.30 max per leg -- verified live 2026-07-22
+STT_RATE             = 0.001         # 0.1% on BOTH buy and sell -- verified live 2026-07-22
 NSE_EXCHANGE_RATE    = 0.0000297     # 0.00297% both sides
 SEBI_RATE            = 0.000001      # 0.0001% both sides
 GST_RATE             = 0.18          # 18% on (brokerage + exchange + SEBI)
 STAMP_DUTY_RATE      = 0.00015       # 0.015% on buy value
-STAMP_DUTY_MAX       = 1500.0        # ₹1500 cap per instrument
-DP_CHARGE_PER_SELL   = 18.5          # ₹18.5 flat CDSL DP charge per sell
+STAMP_DUTY_MAX       = 1500.0        # Rs.1500 cap per instrument
+DP_CHARGE_PER_SELL   = 18.5          # Rs.18.5 flat CDSL DP charge per sell
 
 
 @dataclass
@@ -53,22 +69,23 @@ class ChargeBreakdown:
 
 def buy_charges(trade_value: float) -> ChargeBreakdown:
     """Calculate all charges for a buy order of given value (₹)."""
-    brokerage    = BROKERAGE_RATE * trade_value               # ₹0 for Upstox delivery
+    brokerage    = min(BROKERAGE_RATE * trade_value, BROKERAGE_CAP)
+    stt          = STT_RATE * trade_value                      # verified live on buy leg too
     exchange     = NSE_EXCHANGE_RATE * trade_value
     sebi         = SEBI_RATE * trade_value
     gst          = GST_RATE * (brokerage + exchange + sebi)
     stamp_duty   = min(STAMP_DUTY_RATE * trade_value, STAMP_DUTY_MAX)
-    total        = brokerage + exchange + sebi + gst + stamp_duty
+    total        = brokerage + stt + exchange + sebi + gst + stamp_duty
     return ChargeBreakdown(
-        brokerage=brokerage, stt=0.0, exchange=exchange,
+        brokerage=brokerage, stt=stt, exchange=exchange,
         sebi=sebi, gst=gst, stamp_duty=stamp_duty, dp_charges=0.0, total=total
     )
 
 
 def sell_charges(trade_value: float) -> ChargeBreakdown:
     """Calculate all charges for a sell order of given value (₹)."""
-    brokerage    = BROKERAGE_RATE * trade_value
-    stt          = STT_SELL_RATE * trade_value
+    brokerage    = min(BROKERAGE_RATE * trade_value, BROKERAGE_CAP)
+    stt          = STT_RATE * trade_value
     exchange     = NSE_EXCHANGE_RATE * trade_value
     sebi         = SEBI_RATE * trade_value
     gst          = GST_RATE * (brokerage + exchange + sebi)

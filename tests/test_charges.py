@@ -5,26 +5,28 @@ from charges.calculator import buy_charges, sell_charges, round_trip_charges, ne
 
 
 class TestBuyCharges:
-    def test_zero_brokerage(self):
+    def test_capped_brokerage(self):
+        # verified live 2026-07-22: min(2.5% of trade value, Rs.30) per leg
         c = buy_charges(10000)
-        assert c.brokerage == 0.0   # Upstox free delivery
+        assert c.brokerage == pytest.approx(30.0, abs=0.01)
 
     def test_stamp_duty_positive(self):
         c = buy_charges(10000)
         assert c.stamp_duty > 0
 
-    def test_no_stt_on_buy(self):
+    def test_stt_on_buy(self):
+        # verified live 2026-07-22: STT charged on buy leg too, not sell-only
         c = buy_charges(10000)
-        assert c.stt == 0.0
+        assert c.stt == pytest.approx(10.0, abs=0.01)   # 0.1% of 10000
 
     def test_gst_applied(self):
         c = buy_charges(10000)
         assert c.gst > 0
 
     def test_total_reasonable(self):
-        # Buy charges should be << 0.1% for delivery
+        # Buy charges on Rs.10,000: ~Rs.47.26 (brokerage cap + STT dominate)
         c = buy_charges(10000)
-        assert c.total < 10   # Less than ₹10 on ₹10,000 buy
+        assert c.total < 50
 
     def test_stamp_duty_cap(self):
         # Very large trade — stamp duty should be capped at ₹1500
@@ -56,8 +58,10 @@ class TestRoundTrip:
         assert rt["total_charges"] > 0
 
     def test_charges_pct_under_half_percent(self):
-        # For delivery, total round trip charges should be < 0.5% of buy value
-        rt = round_trip_charges(10000, 10000)
+        # Brokerage cap (Rs.30/leg) dominates small trades, so the <0.5% bound
+        # only holds at realistic system trade sizes (tens of thousands+), not
+        # at Rs.10,000 (verified live 2026-07-22: Rs.10k round trip = 1.12%).
+        rt = round_trip_charges(50000, 50000)
         assert rt["charges_pct"] < 0.5
 
 
