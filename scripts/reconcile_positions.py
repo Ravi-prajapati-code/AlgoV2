@@ -1,16 +1,27 @@
 """
 Position Reconciler — compares DB open positions vs actual Upstox holdings.
-Alerts via Telegram if DB and broker are out of sync.
+
+Broker-only mismatches (broker holds a symbol DB doesn't know about) are
+auto-fixed: inserted via the same origin-recovery logic daily_runner.py's
+sync uses, reusing add_or_update_broker_positions() so there's one vetted
+implementation instead of two that can drift apart. This was previously
+alert-only, which is how the CEMPRO.NS live-buy-not-yet-persisted incident
+(2026-07-21) sat undetected until caught manually the same day — see
+[[cempro_orphan_position_bug_20260722]] in memory.
+
+DB-only mismatches (DB thinks a position is open, broker doesn't have it)
+stay alert-only — auto-closing on a possibly-stale/erroring broker read
+risks masking a real failed-sell that needs a human look, so that side is
+intentionally NOT auto-fixed.
 
 Cron (server — all times IST):
   # 09:20 IST Mon-Fri — after token refresh (08:30 IST), checks yesterday's positions
   20 9 * * 1-5  cd /home/ubuntu/AlgoV2 && .venv/bin/python scripts/reconcile_positions.py >> logs/reconcile.log 2>&1
 """
 
-import os
 import sys
 import logging
-from datetime import datetime
+from datetime import date
 from pathlib import Path
 
 ROOT = Path(__file__).parent.parent
@@ -43,56 +54,22 @@ def _send(msg: str):
         logger.error("Telegram send failed: %s", e)
 
 
-def get_broker_symbols() -> set | None:
-    """Fetch live holdings from Upstox (CNC delivery positions).
+def get_broker_positions():
+    """Fetch live CNC delivery positions from Upstox via the shared broker abstraction.
 
-    Returns set of symbols on success, or None if ALL API calls failed
-    (auth error / network issue) — caller must skip mismatch check in that case.
+    Returns list[LivePosition] on success, or None if the broker returned
+    nothing at all (auth error / network issue) — caller must skip the
+    mismatch check in that case rather than treat it as "broker holds 0".
     """
-    token = os.getenv("UPSTOX_ACCESS_TOKEN", "")
-    if not token:
-        raise RuntimeError("UPSTOX_ACCESS_TOKEN missing from .env")
+    from broker.upstox import UpstoxBroker
 
-    base_url = "https://api.upstox.com/v2"
-    headers = {
-        "Authorization": f"Bearer {token}",
-        "Accept": "application/json",
-    }
-
-    symbols = set()
-    any_success = False
-
-    # Long-term holdings (CNC delivery)
-    try:
-        resp = requests.get(f"{base_url}/portfolio/long-term-holdings", headers=headers, timeout=10)
-        resp.raise_for_status()
-        any_success = True
-        for pos in resp.json().get("data", []):
-            qty = int(pos.get("quantity", 0))
-            if qty > 0:
-                sym = pos.get("tradingsymbol", "") + ".NS"
-                symbols.add(sym)
-    except Exception as e:
-        logger.warning("Holdings fetch failed: %s", e)
-
-    # Short-term positions (T1 / unsettled)
-    try:
-        resp = requests.get(f"{base_url}/portfolio/short-term-positions", headers=headers, timeout=10)
-        resp.raise_for_status()
-        any_success = True
-        for pos in resp.json().get("data", []):
-            qty = int(pos.get("quantity", 0))
-            if qty > 0 and pos.get("product") == "CNC":
-                sym = pos.get("tradingsymbol", "") + ".NS"
-                symbols.add(sym)
-    except Exception as e:
-        logger.warning("Short-term positions fetch failed: %s", e)
-
-    if not any_success:
-        logger.warning("All Upstox API calls failed — token may be expired. Skipping mismatch check.")
+    broker = UpstoxBroker()
+    positions = broker.get_positions()
+    if not positions:
+        logger.warning("Broker returned 0 positions — token may be expired or API down. Skipping check.")
         return None
-
-    return symbols
+    # Keep parity with the old conservative filter: only CNC delivery counts here.
+    return [p for p in positions if p.product == "CNC"]
 
 
 def get_db_symbols() -> set:
@@ -102,27 +79,26 @@ def get_db_symbols() -> set:
 
 
 def run_reconcile():
-    now = datetime.now().strftime("%d %b %Y %H:%M")
-    logger.info("Starting reconciliation — %s", now)
+    now_str = date.today().strftime("%d %b %Y")
+    logger.info("Starting reconciliation — %s", now_str)
 
     try:
-        broker_syms = get_broker_symbols()
-    except RuntimeError as e:
-        _send(f"⚠️ <b>Reconciler Error</b>\n{e}\n<i>{now}</i>")
+        broker_positions = get_broker_positions()
+    except Exception as e:
+        _send(f"⚠️ <b>Reconciler Error</b>\n{e}\n<i>{now_str}</i>")
         sys.exit(1)
 
-    if broker_syms is None:
-        # All API calls failed — likely stale token. Don't raise false mismatch.
-        logger.warning("Reconciliation skipped — Upstox API unavailable (check token).")
-        print(f"[{now}] SKIP — API unavailable, token may be expired.")
+    if broker_positions is None:
+        print(f"[{now_str}] SKIP — API unavailable, token may be expired.")
         return
 
+    from db.repository import load_positions
+
+    broker_syms = {p.symbol for p in broker_positions}
     db_syms = get_db_symbols()
 
-    # Stocks DB thinks are open but broker doesn't hold
-    ghost = db_syms - broker_syms
-    # Stocks broker holds that DB doesn't know about (excluding manual holdings)
-    unknown = broker_syms - db_syms
+    ghost = db_syms - broker_syms      # DB open, broker doesn't have it — alert only
+    unknown = broker_syms - db_syms    # Broker holds, DB doesn't know — auto-fixed below
 
     logger.info("DB open: %s", db_syms)
     logger.info("Broker holds: %s", broker_syms)
@@ -131,10 +107,27 @@ def run_reconcile():
 
     if not ghost and not unknown:
         logger.info("Reconciliation OK — DB and broker match.")
-        print(f"[{now}] OK — {len(db_syms)} positions match.")
+        print(f"[{now_str}] OK — {len(db_syms)} positions match.")
         return
 
-    lines = [f"⚠️ <b>Position Mismatch — {now}</b>"]
+    fixed = []
+    fix_failed = []
+    if unknown:
+        from runner.daily_runner import add_or_update_broker_positions
+
+        db_positions = {p.symbol: p for p in load_positions(status="OPEN")}
+        unknown_positions = [p for p in broker_positions if p.symbol in unknown]
+        try:
+            add_or_update_broker_positions(date.today(), unknown_positions, db_positions)
+            # Verify it actually landed before calling it fixed.
+            still_missing = unknown - {p.symbol for p in load_positions(status="OPEN")}
+            fixed = sorted(unknown - still_missing)
+            fix_failed = sorted(still_missing)
+        except Exception as e:
+            logger.error("Auto-fix failed: %s", e)
+            fix_failed = sorted(unknown)
+
+    lines = [f"⚠️ <b>Position Mismatch — {now_str}</b>"]
 
     if ghost:
         lines.append(
@@ -143,16 +136,25 @@ def run_reconcile():
             + "\n<i>Sell order may have failed — check manually.</i>"
         )
 
-    if unknown:
+    if fixed:
         lines.append(
-            "\n🟡 <b>Broker holds but DB has no record:</b>\n"
-            + "\n".join(f"  • {s}" for s in sorted(unknown))
-            + "\n<i>May be manual trade or sync lag — verify.</i>"
+            "\n🟢 <b>Broker-only positions auto-recorded to DB:</b>\n"
+            + "\n".join(f"  • {s}" for s in fixed)
+            + "\n<i>Origin classified strategy/manual per prior-record heuristic — verify.</i>"
+        )
+
+    if fix_failed:
+        lines.append(
+            "\n🟡 <b>Broker holds but auto-fix failed, DB still has no record:</b>\n"
+            + "\n".join(f"  • {s}" for s in fix_failed)
+            + "\n<i>Needs manual insert — check logs/reconcile.log.</i>"
         )
 
     _send("\n".join(lines))
-    logger.warning("Mismatch detected — alert sent.")
-    sys.exit(2)
+    logger.warning("Mismatch detected — %d auto-fixed, %d ghost, %d fix-failed.",
+                    len(fixed), len(ghost), len(fix_failed))
+    if ghost or fix_failed:
+        sys.exit(2)
 
 
 if __name__ == "__main__":

@@ -195,6 +195,87 @@ def _close_broker_ghost_position(broker, pos: Position, today: date, exit_reason
     )
 
 
+def add_or_update_broker_positions(today: date, live_positions, db_positions: dict) -> None:
+    """Add broker holdings missing from DB, or update share count if it drifted.
+
+    Extracted from sync_portfolio_with_broker() so scripts/reconcile_positions.py
+    can reuse the exact same origin-recovery/price-fallback logic for its
+    narrower next-morning auto-fix (broker-only positions only — it never
+    calls the ghost-close side of the sync, that stays alert-only there).
+    """
+    for lp in live_positions:
+        if lp.symbol not in db_positions:
+            # Guard: skip T+1 settlement residue — CNC sells appear in holdings next day
+            if was_sold_today(lp.symbol, today):
+                logger.info(
+                    "[Sync] %s sold today — skipping re-add (T+1 settlement residue).",
+                    lp.symbol,
+                )
+                continue
+
+            # Recover original entry_date from any previous record (closed due to API error, etc.)
+            # — but only trust that recovery for a GENUINE same-cycle gap (broker API hiccup,
+            # T+1 residue mistiming). A prev record whose most recent trade closed days/weeks
+            # ago belongs to a different real-world holding lineage (e.g. re-acquired manually
+            # after the strategy exited) — treating it as a live re-add would both misclassify
+            # origin and backdate entry_price/date to a stale, unrelated trade. docs/30.
+            prev = get_last_position(lp.symbol)
+            last_trade = next((t for t in load_trades() if t.symbol == lp.symbol), None)
+            is_recent_gap = bool(
+                prev and last_trade and (today - last_trade.exit_date).days <= RECENT_GAP_DAYS
+            )
+            if prev and not is_recent_gap:
+                prev = None  # stale lineage — treat as a fresh (likely manual) holding
+            recovered_date = prev.entry_date if prev else today
+            # Upstox avg_price = 0 for T+1 holdings; use ltp then OHLCV as fallback
+            broker_price = lp.avg_price if lp.avg_price > 0 else lp.ltp
+            if broker_price <= 0:
+                broker_price = get_last_ohlcv_close(lp.symbol)
+                if broker_price > 0:
+                    logger.info(
+                        "[Sync] %s: broker returned price=0 — using OHLCV last close: ₹%.2f",
+                        lp.symbol, broker_price,
+                    )
+                else:
+                    logger.warning(
+                        "[Sync] %s: could not determine entry price from broker or OHLCV — recording 0",
+                        lp.symbol,
+                    )
+            # Only recover prev entry_price if it was non-zero; otherwise trust broker price
+            recovered_price = (prev.entry_price
+                               if (prev and prev.entry_price > 0)
+                               else broker_price)
+            # No prior DB record at all (any status) means the strategy never opened
+            # this position — it's a manual/imported broker holding. docs/30.
+            origin = "strategy" if prev else "manual"
+            if is_recent_gap:
+                logger.info(f"[Sync] Recovered gap position: {lp.symbol} origin={origin}")
+            else:
+                logger.info(f"[Sync] New {origin} position in Broker: {lp.symbol}. Adding to DB.")
+            stops = initial_stops(recovered_price)
+            new_pos = Position(
+                symbol=lp.symbol,
+                sector=get_sector(lp.symbol),
+                entry_date=recovered_date,
+                entry_price=recovered_price,
+                shares=lp.quantity,
+                stop_loss=stops["stop_loss"],
+                take_profit=stops["take_profit"],
+                trailing_stop=stops["trailing_stop"],
+                peak_price=max(recovered_price, lp.ltp),
+                origin=origin,
+            )
+            save_position(new_pos)
+
+        else:
+            # Update share count if it changed manually
+            db_pos = db_positions[lp.symbol]
+            if db_pos.shares != lp.quantity:
+                logger.info(f"[Sync] Updating {lp.symbol} shares: {db_pos.shares} -> {lp.quantity}")
+                db_pos.shares = lp.quantity
+                save_position(db_pos)
+
+
 def sync_portfolio_with_broker(broker, today: date):
     """
     Ensure DB 'OPEN' positions exactly match Broker live holdings.
@@ -246,80 +327,7 @@ def sync_portfolio_with_broker(broker, today: date):
         db_positions = {p.symbol: p for p in load_positions(status="OPEN")}
 
         # 2. Add or Update positions found in Broker
-        for lp in live_positions:
-            if lp.symbol not in db_positions:
-                # Guard: skip T+1 settlement residue — CNC sells appear in holdings next day
-                if was_sold_today(lp.symbol, today):
-                    logger.info(
-                        "[Sync] %s sold today — skipping re-add (T+1 settlement residue).",
-                        lp.symbol,
-                    )
-                    continue
-
-                # Recover original entry_date from any previous record (closed due to API error, etc.)
-                # — but only trust that recovery for a GENUINE same-cycle gap (broker API hiccup,
-                # T+1 residue mistiming). A prev record whose most recent trade closed days/weeks
-                # ago belongs to a different real-world holding lineage (e.g. re-acquired manually
-                # after the strategy exited) — treating it as a live re-add would both misclassify
-                # origin and backdate entry_price/date to a stale, unrelated trade. docs/30.
-                prev = get_last_position(lp.symbol)
-                last_trade = next((t for t in load_trades() if t.symbol == lp.symbol), None)
-                is_recent_gap = bool(
-                    prev and last_trade and (today - last_trade.exit_date).days <= RECENT_GAP_DAYS
-                )
-                if prev and not is_recent_gap:
-                    prev = None  # stale lineage — treat as a fresh (likely manual) holding
-                recovered_date = prev.entry_date if prev else today
-                # Upstox avg_price = 0 for T+1 holdings; use ltp then OHLCV as fallback
-                broker_price = lp.avg_price if lp.avg_price > 0 else lp.ltp
-                if broker_price <= 0:
-                    broker_price = get_last_ohlcv_close(lp.symbol)
-                    if broker_price > 0:
-                        logger.info(
-                            "[Sync] %s: broker returned price=0 — using OHLCV last close: ₹%.2f",
-                            lp.symbol, broker_price,
-                        )
-                    else:
-                        logger.warning(
-                            "[Sync] %s: could not determine entry price from broker or OHLCV — recording 0",
-                            lp.symbol,
-                        )
-                # Only recover prev entry_price if it was non-zero; otherwise trust broker price
-                recovered_price = (prev.entry_price
-                                   if (prev and prev.entry_price > 0)
-                                   else broker_price)
-                # No prior DB record at all (any status) means the strategy never opened
-                # this position — it's a manual/imported broker holding. docs/30.
-                origin = "strategy" if prev else "manual"
-                if prev:
-                    logger.info(
-                        f"[Sync] Re-adding {lp.symbol} — recovering entry_date={recovered_date} "
-                        f"entry_price=₹{recovered_price:.2f} from previous record."
-                    )
-                else:
-                    logger.info(f"[Sync] New {origin} position in Broker: {lp.symbol}. Adding to DB.")
-                stops = initial_stops(recovered_price)
-                new_pos = Position(
-                    symbol=lp.symbol,
-                    sector=get_sector(lp.symbol),
-                    entry_date=recovered_date,
-                    entry_price=recovered_price,
-                    shares=lp.quantity,
-                    stop_loss=stops["stop_loss"],
-                    take_profit=stops["take_profit"],
-                    trailing_stop=stops["trailing_stop"],
-                    peak_price=max(recovered_price, lp.ltp),
-                    origin=origin,
-                )
-                save_position(new_pos)
-
-            else:
-                # Update share count if it changed manually
-                db_pos = db_positions[lp.symbol]
-                if db_pos.shares != lp.quantity:
-                    logger.info(f"[Sync] Updating {lp.symbol} shares: {db_pos.shares} -> {lp.quantity}")
-                    db_pos.shares = lp.quantity
-                    save_position(db_pos)
+        add_or_update_broker_positions(today, live_positions, db_positions)
 
         # 3. Remove legacy stop-loss GTTs — exits are signal-only.
         # Never touch a non-strategy position's GTTs — those are the user's own broker-side
