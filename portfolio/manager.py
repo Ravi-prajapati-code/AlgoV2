@@ -15,6 +15,7 @@ from db.repository import total_capital_injected_ever
 from portfolio.sizer import calculate_shares_for_value, position_value
 from portfolio.allocator import can_open_position, portfolio_invested_value
 from portfolio.risk import can_open_new_trades
+from portfolio.long_term_reserve import load_reserve_target, undeployed_reserve
 from strategy.exit import initial_stops
 from charges.calculator import net_pnl, buy_charges
 from broker.base import BaseBroker
@@ -25,7 +26,7 @@ from config.settings import (
     MAX_STOCK_ALLOCATION_PCT, DRAWDOWN_REDUCE_SIZE_PCT, DRAWDOWN_REDUCE_TIER2_MULT, GTT_LIMIT_BUFFER_PCT,
     REPLACE_MIN_NEW_RS, REPLACE_MAX_HELD_RS, REPLACE_MIN_GAP, MIN_PROFIT_SOFT,
     MAX_NEW_TRADES_PER_DAY, DRAWDOWN_KILL_SWITCH_PCT, DD_THROTTLE_DISABLED_ENABLED,
-    REGIME_SIZE_MULT_BEAR, REGIME_SIZE_MULT_BULL,
+    REGIME_SIZE_MULT_BEAR, REGIME_SIZE_MULT_BULL, REGIME_SIZE_MULT_STRONG_BULL,
 )
 from strategy.defensive_portfolio import (
     ROTATION_ENABLED, ROTATE_EXIT_RS, ROTATE_INTO_RS, ROTATE_MIN_GAP,
@@ -244,9 +245,21 @@ class PortfolioManager:
         docs/30."""
         return self.strategy_value(prices)
 
-    def process_signals(self, today: date, signals: List[Signal], prices: dict, indicators: dict = None, regime: str = None, fund_injection: float = 0.0):
+    def _strategy_open_positions(self) -> List[Position]:
+        """Strategy-origin positions only — the basis for slot counting, eviction,
+        rotation, and pyramid-add candidate selection. Excludes manual/imported and
+        long_term-sleeve holdings so they can't be force-sold by swing logic or have
+        swing capital pyramided into them."""
+        return [p for p in self.open_positions if p.origin == "strategy"]
+
+    def process_signals(self, today: date, signals: List[Signal], prices: dict, indicators: dict = None, regime: str = None, fund_injection: float = 0.0, strong_bull: bool = False):
         """Process today's signals: Exits first, then dynamic batch entries."""
         self.new_trades_today = 0
+        # Capital reserved for the long-term sleeve is netted out of every swing
+        # cash/sizing computation below (swing_cash), never out of self.cash itself —
+        # actual debits/credits still hit the real cash pool. 0.0 when the sleeve is
+        # off, so this is a no-op until LONG_TERM_REBALANCE_ENABLED is flipped on.
+        swing_cash = self.cash - undeployed_reserve(self.open_positions, prices, load_reserve_target())
         # Stop-loss/trailing-stop GTTs removed — positions now exit only on the
         # system's own sell signals, executed as real market sells (see _execute_sell).
         if self.broker:
@@ -266,7 +279,7 @@ class PortfolioManager:
 
         # ── A.2 Score Drop Exit: RS declining N days → exit → 50/50 to others ──
         if SCORE_DROP_EXIT_ENABLED:
-            non_def = [p for p in self.open_positions
+            non_def = [p for p in self._strategy_open_positions()
                        if not is_defensive_symbol(p.symbol)
                        and p.symbol != SAFE_HAVEN_SYMBOL]
             for pos in list(non_def):
@@ -280,11 +293,11 @@ class PortfolioManager:
                 )
                 self._execute_sell(today, pos, evict_sig, prices)
                 pv = self.portfolio_value(prices)
-                remaining = [p for p in self.open_positions
+                remaining = [p for p in self._strategy_open_positions()
                              if not is_defensive_symbol(p.symbol)
                              and p.symbol != SAFE_HAVEN_SYMBOL]
                 if remaining:
-                    each_cash = self.cash / len(remaining)
+                    each_cash = swing_cash / len(remaining)
                     for recv in remaining:
                         recv_price = prices.get(recv.symbol, recv.entry_price)
                         recv_ind   = (indicators or {}).get(recv.symbol, {})
@@ -325,7 +338,7 @@ class PortfolioManager:
         # ── A.3 Ride the Winner: P&L gap ≥ N% → sell worst, ALL to best ──
         ride_winner_fired = False
         if RIDE_WINNER_ENABLED:
-            non_def = [p for p in self.open_positions
+            non_def = [p for p in self._strategy_open_positions()
                        if not is_defensive_symbol(p.symbol)
                        and p.symbol != SAFE_HAVEN_SYMBOL]
             if len(non_def) >= 2:
@@ -368,7 +381,7 @@ class PortfolioManager:
                         add_price     = round_to_tick(raw_add)
                         best_val_now  = best.shares * add_price
                         max_add       = max(0, pv * MAX_STOCK_ALLOCATION_PCT - best_val_now)
-                        add_budget    = min(self.cash * (1.0 - SIZER_CASH_BUFFER_PCT), max_add)
+                        add_budget    = min(swing_cash * (1.0 - SIZER_CASH_BUFFER_PCT), max_add)
                         add_val       = add_budget - buy_charges(add_budget).total
                         add_shares    = calculate_shares_for_value(add_val, add_price)
                         if add_shares > 0:
@@ -400,7 +413,7 @@ class PortfolioManager:
         # Must run before sell signals so a soft exit (e.g. MOMENTUM_DECAY) can't steal the loser first.
         # Skip if ride-winner already acted this session.
         if ROTATION_ENABLED and not ride_winner_fired:
-            non_def = [p for p in self.open_positions
+            non_def = [p for p in self._strategy_open_positions()
                        if not is_defensive_symbol(p.symbol)
                        and p.symbol != SAFE_HAVEN_SYMBOL]
             if len(non_def) >= 2:
@@ -437,7 +450,7 @@ class PortfolioManager:
                         add_price = round_to_tick(raw_add)
                         best_val_now = best.shares * add_price
                         max_add = max(0, _portfolio_val * MAX_STOCK_ALLOCATION_PCT - best_val_now)
-                        add_budget = min(self.cash * (1.0 - SIZER_CASH_BUFFER_PCT), max_add)
+                        add_budget = min(swing_cash * (1.0 - SIZER_CASH_BUFFER_PCT), max_add)
                         target_value = add_budget - buy_charges(add_budget).total
                         add_shares = calculate_shares_for_value(target_value, add_price)
                         if add_shares > 0:
@@ -475,7 +488,7 @@ class PortfolioManager:
 
         # 2. Execute BUYS (Zero Cash / Dynamic Slot Allocation)
         buy_signals = sorted([s for s in signals if s.action == "BUY"], key=lambda x: x.score, reverse=True)
-        available_slots = MAX_OPEN_POSITIONS - len(self.open_positions)
+        available_slots = MAX_OPEN_POSITIONS - len(self._strategy_open_positions())
         portfolio_val = self.portfolio_value(prices)
 
         # ── Rank replacement: if slots full and a meaningfully stronger stock is waiting,
@@ -486,9 +499,9 @@ class PortfolioManager:
         # condition so a low-cash day can't produce a pure eviction with no replacement buy.
         pre_replace_dd = (self.peak_value - portfolio_val) / self.peak_value if self.peak_value > 0 else 0.0
         replace_risk_ok = (self.new_trades_today < MAX_NEW_TRADES_PER_DAY) and (pre_replace_dd < DRAWDOWN_KILL_SWITCH_PCT)
-        if buy_signals and available_slots == 0 and replace_risk_ok and self.cash > (portfolio_val * 0.005):
+        if buy_signals and available_slots == 0 and replace_risk_ok and swing_cash > (portfolio_val * 0.005):
             best_cand = buy_signals[0]
-            non_def = [p for p in self.open_positions if not is_defensive_symbol(p.symbol)]
+            non_def = [p for p in self._strategy_open_positions() if not is_defensive_symbol(p.symbol)]
             if non_def:
                 weakest = min(non_def, key=lambda p: (indicators or {}).get(p.symbol, {}).get("rs_rank", 101))
                 weakest_rs = float((indicators or {}).get(weakest.symbol, {}).get("rs_rank", 101))
@@ -507,18 +520,23 @@ class PortfolioManager:
                         reason="RANK_REPLACED",
                     )
                     self._execute_sell(today, weakest, evict_sig, prices)
-                    available_slots = MAX_OPEN_POSITIONS - len(self.open_positions)
+                    available_slots = MAX_OPEN_POSITIONS - len(self._strategy_open_positions())
                     portfolio_val = self.portfolio_value(prices)
 
-        if self.cash > (portfolio_val * 0.005): # Only invest if we have at least 0.5% cash
+        if swing_cash > (portfolio_val * 0.005): # Only invest if we have at least 0.5% cash
             num_to_buy = min(len(buy_signals), available_slots)
 
             if num_to_buy > 0:
                 # Case 1: Fill empty slots with new leaders
                 # Reserve 5% buffer so charges don't cause order rejection
-                spendable = self.cash * (1.0 - SIZER_CASH_BUFFER_PCT)
+                spendable = swing_cash * (1.0 - SIZER_CASH_BUFFER_PCT)
                 base_slot_cash = spendable / max(available_slots, 1)
-                base_slot_cash *= REGIME_SIZE_MULT_BEAR if regime == "BEAR" else REGIME_SIZE_MULT_BULL
+                if regime == "BEAR":
+                    base_slot_cash *= REGIME_SIZE_MULT_BEAR
+                elif strong_bull:
+                    base_slot_cash *= REGIME_SIZE_MULT_STRONG_BULL
+                else:
+                    base_slot_cash *= REGIME_SIZE_MULT_BULL
                 # Graduated size reduction under drawdown — mirrors backtest engine
                 current_dd = (self.peak_value - portfolio_val) / self.peak_value if self.peak_value > 0 else 0.0
                 if not DD_THROTTLE_DISABLED_ENABLED:
@@ -534,7 +552,7 @@ class PortfolioManager:
                     # Check overall risk limits first — safe-haven hedge entries
                     # bypass the drawdown breaker (see portfolio/risk.py docstring).
                     allowed, reason = can_open_new_trades(
-                        self.new_trades_today, self.open_positions,
+                        self.new_trades_today, self._strategy_open_positions(),
                         portfolio_val, self.peak_value,
                         bypass_drawdown=(sig.symbol == SAFE_HAVEN_SYMBOL and SAFE_HAVEN_DD_BYPASS_ENABLED),
                     )
@@ -574,7 +592,7 @@ class PortfolioManager:
                     # Safe haven: deploy up to 50% of portfolio value — limits drawdown from gold volatility
                     if sig.symbol == SAFE_HAVEN_SYMBOL and not GOLD_EQUAL_SLOT_SIZING:
                         max_safe_haven = portfolio_val * SAFE_HAVEN_ALLOCATION_PCT
-                        useable_cash = min(self.cash * (1.0 - SIZER_CASH_BUFFER_PCT), max_safe_haven)
+                        useable_cash = min(swing_cash * (1.0 - SIZER_CASH_BUFFER_PCT), max_safe_haven)
                         target_val = useable_cash - buy_charges(useable_cash).total
                         shares = calculate_shares_for_value(target_val, price)
                         logger.info(f"  [SafeHaven] 50% cap allocation: ₹{useable_cash:,.0f} → {shares} shares @ ₹{price}")
@@ -668,12 +686,12 @@ class PortfolioManager:
                         repo.save_position(new_pos)
                         self.new_trades_today += 1
 
-            elif len(self.open_positions) > 0:
+            elif len(self._strategy_open_positions()) > 0:
                 # Case 2: No new buy signals — pyramid into the strongest winner
                 # ONLY add if the position is pulling back toward EMA20 (not chasing extended price)
                 best_pos = None
                 highest_rs = -1.0
-                for pos in self.open_positions:
+                for pos in self._strategy_open_positions():
                     rs = (indicators or {}).get(pos.symbol, {}).get("composite_rank", 0)
                     if rs > highest_rs:
                         highest_rs = rs
@@ -700,7 +718,7 @@ class PortfolioManager:
                     # Cap ADD: don't push any position past MAX_STOCK_ALLOCATION_PCT
                     max_add_value = max(0, portfolio_val * MAX_STOCK_ALLOCATION_PCT
                                        - best_pos.shares * price)
-                    add_budget = min(self.cash * (1.0 - SIZER_CASH_BUFFER_PCT), max_add_value)
+                    add_budget = min(swing_cash * (1.0 - SIZER_CASH_BUFFER_PCT), max_add_value)
                     target_value = add_budget - buy_charges(add_budget).total
                     add_shares = calculate_shares_for_value(target_value, price)
                     if add_shares > 0:
@@ -736,7 +754,13 @@ class PortfolioManager:
                                 cancel_stale_gtts(self.broker, best_pos.symbol, "ADD (pyramiding) refresh — stop-loss/trail removed")
 
         # 3. Save Daily Snapshot
-        # Re-sync cash from broker — detect any external deposits before updating self.cash
+        self.record_snapshot(today, prices, regime=regime, fund_injection=fund_injection)
+
+    def record_snapshot(self, today: date, prices: dict, regime: str = "BULL", fund_injection: float = 0.0):
+        """Re-sync cash from broker (detecting external deposits) and persist a
+        PortfolioSnapshot. Extracted from process_signals so the long-term-sleeve
+        rebalance script can also record a snapshot after its own buys/sells without
+        duplicating this accounting logic. docs/30."""
         injection_today = 0.0
         if self.broker:
             try:
@@ -793,7 +817,7 @@ class PortfolioManager:
             strategy_value=pv_strategy_after,
         )
         repo.save_snapshot(snap)
-        
+
         logger.info(
             f"[Capital] {today} | Total: ₹{pv_after:,.0f} | Cash: ₹{self.cash:,.0f} | "
             f"Invested Cost: ₹{invested_cost:,.0f} | Market Val: ₹{market_val:,.0f} | Day P&L: ₹{day_pnl:+,.0f}"

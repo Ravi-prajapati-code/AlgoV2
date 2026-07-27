@@ -1,6 +1,6 @@
 import os
 import pandas as pd
-from config.settings import MARKET_FILTER_ENABLED
+from config.settings import MARKET_FILTER_ENABLED, STRONG_BULL_EXTENSION_PCT, STRONG_BULL_CONFIRM_DAYS
 
 MIN_INDEX_CANDLES = 100
 REGIME_CONFIRM_DAYS = int(os.getenv("REGIME_CONFIRM_DAYS", "3"))   # consecutive days required to confirm a regime change
@@ -32,6 +32,32 @@ def detect_regime(index_df: pd.DataFrame) -> str:
     lookback = min(20, len(close))
     extended = [bool(close.iloc[-i] > ema100.iloc[-i]) for i in range(1, lookback + 1)]
     return "BULL" if (sum(extended) / len(extended)) >= 0.65 else "BEAR"
+
+def is_strong_bull(index_df: pd.DataFrame) -> bool:
+    """
+    Additive overlay on top of an already-confirmed BULL regime -- never
+    modifies or replaces detect_regime() itself (a prior sensitivity/latency
+    change to the regime trigger was rejected 3/3 variants on whipsaw).
+    Callers must AND this with regime == "BULL"; this function does not
+    re-check EMA100 itself.
+
+    True when the index has closed STRONG_BULL_EXTENSION_PCT or more above
+    its own EMA(50) for STRONG_BULL_CONFIRM_DAYS consecutive days -- mirrors
+    the per-stock EXTENSION_CAP_PCT math (strategy/entry.py) applied to the
+    index, with its own multi-day confirm window as the anti-whipsaw guard.
+    """
+    if index_df is None or len(index_df) < MIN_INDEX_CANDLES:
+        return False
+
+    close = index_df['close']
+    ema50 = close.ewm(span=50, adjust=False).mean()
+
+    n = min(STRONG_BULL_CONFIRM_DAYS, len(close))
+    extended = [
+        bool((close.iloc[-i] - ema50.iloc[-i]) / ema50.iloc[-i] >= STRONG_BULL_EXTENSION_PCT)
+        for i in range(1, n + 1)
+    ]
+    return all(extended)
 
 def is_buy_allowed(regime: str) -> bool:
     if not MARKET_FILTER_ENABLED:

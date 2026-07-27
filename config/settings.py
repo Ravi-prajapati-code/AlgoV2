@@ -110,6 +110,13 @@ ATR_STOP_MULTIPLIER     = per_trade_cfg.get('atr_stop_multiplier', 2.5)
 RS_THRESHOLD         = float(os.getenv("RS_THRESHOLD", "72.0"))  # min composite_rank to qualify for buy
 ADX_TREND_THRESHOLD  = float(os.getenv("ADX_TREND_THRESHOLD", entry_cfg.get('adx_trend_threshold', 20.0)))
 EXTENSION_CAP_PCT    = float(os.getenv("EXTENSION_CAP_PCT", "0.15"))       # max price extension above EMA50
+# Index-level "strong bull" overlay (regime-tiered sizing) -- reuses the same
+# extension-above-EMA math as EXTENSION_CAP_PCT but applied to the index, with
+# its own multi-day confirm window to avoid single-day whipsaw. Additive on top
+# of an already-confirmed BULL regime; does not touch detect_regime() itself.
+# Test-only until gated.
+STRONG_BULL_EXTENSION_PCT = float(os.getenv("STRONG_BULL_EXTENSION_PCT", "0.08"))
+STRONG_BULL_CONFIRM_DAYS  = int(os.getenv("STRONG_BULL_CONFIRM_DAYS", "5"))
 BREAKOUT_PCT         = float(os.getenv("BREAKOUT_PCT", "0.05"))            # standard entry: within X of 20d high
 # 200-day EMA trend gate (off by default — live unaffected). Test-only refinement lever.
 TREND_GATE_200_ENABLED = os.getenv("TREND_GATE_200", "false").lower() in ("true", "1", "yes")
@@ -149,6 +156,7 @@ SECTOR_DURABILITY_MIN_TRADES    = int(os.getenv("SECTOR_DURABILITY_MIN_TRADES", 
 # to current baseline. Test-only until gated.
 REGIME_SIZE_MULT_BEAR = float(os.getenv("REGIME_SIZE_MULT_BEAR", "1.0"))
 REGIME_SIZE_MULT_BULL = float(os.getenv("REGIME_SIZE_MULT_BULL", "1.0"))
+REGIME_SIZE_MULT_STRONG_BULL = float(os.getenv("REGIME_SIZE_MULT_STRONG_BULL", "1.0"))
 
 # Rank replacement (backtest/engine.py "Execute Buys"): evict the weakest-RS held
 # position for a much stronger waiting candidate when the portfolio is full.

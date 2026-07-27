@@ -30,7 +30,7 @@ from data.fetcher import fetch_all, fetch_index
 from data.universe import get_all_symbols, get_sector
 from indicators.composite import compute_all
 from strategy.signals import generate_signals
-from strategy.regime import detect_regime, is_buy_allowed, MIN_INDEX_CANDLES, is_index_confirming
+from strategy.regime import detect_regime, is_buy_allowed, MIN_INDEX_CANDLES, is_index_confirming, is_strong_bull
 from strategy.relative_strength import compute_rs_for_all
 from strategy.exit import initial_stops, check_exit_conditions
 from strategy.defensive_portfolio import (
@@ -246,8 +246,10 @@ def add_or_update_broker_positions(today: date, live_positions, db_positions: di
                                if (prev and prev.entry_price > 0)
                                else broker_price)
             # No prior DB record at all (any status) means the strategy never opened
-            # this position — it's a manual/imported broker holding. docs/30.
-            origin = "strategy" if prev else "manual"
+            # this position — it's a manual/imported broker holding. A genuine
+            # same-cycle gap recovers the prior record's own origin (e.g. "long_term")
+            # instead of collapsing every non-fresh position to "strategy". docs/30.
+            origin = prev.origin if prev else "manual"
             if is_recent_gap:
                 logger.info(f"[Sync] Recovered gap position: {lp.symbol} origin={origin}")
             else:
@@ -455,9 +457,11 @@ def run(today: date = None, live_mode: bool = False, fund_injection: float = 0.0
     if index_candles < 20:
         logger.warning("Insufficient market data (%d/20). Defaulting to BULL.", index_candles)
         regime, market_bullish = "BULL", True
+        strong_bull = False
     else:
         regime = detect_regime(index_df)
         market_bullish = is_buy_allowed(regime)
+        strong_bull = regime == "BULL" and is_strong_bull(index_df)
         logger.info("Market regime: %s | BUY entries %s", regime, "ALLOWED" if market_bullish else "BLOCKED")
 
     # 5. Fetch stock data (include defensive symbols so they're available for prices)
@@ -783,7 +787,7 @@ def run(today: date = None, live_mode: bool = False, fund_injection: float = 0.0
 
     mgr = PortfolioManager(INITIAL_CAPITAL, broker=broker)
     mgr.process_signals(today, signals, prices, indicators=indicators, regime=regime,
-                        fund_injection=fund_injection)
+                        fund_injection=fund_injection, strong_bull=strong_bull)
 
     # 11. Outputs & Notifications
     # Re-load snapshots to get the one JUST saved by mgr.process_signals

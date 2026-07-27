@@ -14,7 +14,7 @@ import numpy as np
 
 from db.models import Position, Trade
 from strategy.entry import check_entry
-from strategy.regime import detect_regime, is_buy_allowed, is_index_confirming
+from strategy.regime import detect_regime, is_buy_allowed, is_index_confirming, is_strong_bull
 from strategy.defensive_portfolio import (
     REGIME_SWITCH_DAYS, BULL_RECOVERY_DAYS, REBAL_DAYS, MIN_DEFENSIVE_HOLD_DAYS,
     BEAR_SWING_RS_THRESHOLD, BEAR_SWING_SLOTS, BEAR_SWING_COOLDOWN_DAYS, ENTRY_CONFIRM_DAYS,
@@ -50,7 +50,7 @@ from config.settings import (
     DD_THROTTLE_DISABLED_ENABLED,
     SECTOR_DURABILITY_WEIGHT, SECTOR_DURABILITY_LOOKBACK_DAYS, SECTOR_DURABILITY_MIN_TRADES,
     ENTRY_EMA_MEDIUM, ENTRY_EMA_LONG, EXIT_TREND_EMA,
-    REGIME_SIZE_MULT_BEAR, REGIME_SIZE_MULT_BULL,
+    REGIME_SIZE_MULT_BEAR, REGIME_SIZE_MULT_BULL, REGIME_SIZE_MULT_STRONG_BULL,
 )
 
 logger = logging.getLogger(__name__)
@@ -210,6 +210,7 @@ class BacktestEngine:
                 # ── 2. Regime & Context ───────────────────────────────────
                 first_sym = next(iter(indicators))
                 regime = indicators[first_sym].get("regime", "UNKNOWN")
+                strong_bull = bool(indicators[first_sym].get("strong_bull", False))
                 market_bullish = is_buy_allowed(regime)
 
                 prices = {sym: ind["close"] for sym, ind in indicators.items()}
@@ -809,7 +810,12 @@ class BacktestEngine:
                         # portfolio/manager.py's live sizer (parity fix).
                         spendable = cash * (1.0 - SIZER_CASH_BUFFER_PCT)
                         base_slot_cash = spendable / available_slots
-                        base_slot_cash *= REGIME_SIZE_MULT_BULL
+                        if regime == "BEAR":
+                            base_slot_cash *= REGIME_SIZE_MULT_BEAR
+                        elif strong_bull:
+                            base_slot_cash *= REGIME_SIZE_MULT_STRONG_BULL
+                        else:
+                            base_slot_cash *= REGIME_SIZE_MULT_BULL
                         # Graduated size reduction under drawdown
                         if not DD_THROTTLE_DISABLED_ENABLED:
                             if current_dd >= DRAWDOWN_REDUCE_SIZE_PCT * DRAWDOWN_REDUCE_TIER2_MULT:
@@ -982,6 +988,7 @@ class BacktestEngine:
         index_full = self.data.get(MARKET_INDEX_SYMBOL, pd.DataFrame())
         index_by_time = {}
         regime_by_time = {}
+        strong_bull_by_time = {}
         idx_confirmed_by_time = {}
         nifty_pullback_ok_by_time = {}
         for t in times:
@@ -1001,6 +1008,15 @@ class BacktestEngine:
             else:
                 ema100_idx = idx_time['close'].ewm(span=100, adjust=False).mean()
                 regime_by_time[t] = {d.date(): ("BULL" if idx_time['close'].loc[d] > ema100_idx.loc[d] else "BEAR") for d in idx_time.index}
+            # Precompute strong-bull overlay (own confirm-day hysteresis, independent
+            # of REGIME_SMOOTHING_ENABLED) — expanding window per day, no lookahead.
+            strong_bull_by_time[t] = {
+                idx_time.index[j].date(): (
+                    regime_by_time[t].get(idx_time.index[j].date()) == "BULL"
+                    and is_strong_bull(idx_time.iloc[:j + 1])
+                )
+                for j in range(len(idx_time))
+            }
             # Precompute short-term index confirmation (20 EMA)
             ema20_idx = idx_time['close'].ewm(span=20, adjust=False).mean()
             idx_confirmed_by_time[t] = {d.date(): bool(idx_time['close'].loc[d] > ema20_idx.loc[d]) for d in idx_time.index}
@@ -1123,6 +1139,7 @@ class BacktestEngine:
                         "macd_bullish": h > 0,
                         "perf_10d": perf_10d.loc[dt], "high_20d": high_20d.loc[dt],
                         "rs_rank": rs_ranks.loc[dt], "regime": regime_by_time[t].get(dt.date(), "UNKNOWN"),
+                        "strong_bull": strong_bull_by_time[t].get(dt.date(), False),
                         "adx": round(float(adx_s.loc[dt]) if not pd.isna(adx_s.loc[dt]) else 0.0, 1),
                         "st_direction": int(st_dir_s.loc[dt]) if not pd.isna(st_dir_s.loc[dt]) else -1,
                     }

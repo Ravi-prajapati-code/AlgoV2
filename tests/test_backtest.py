@@ -74,6 +74,66 @@ class TestBacktestEngine:
             assert trade.exit_price is not None
 
 
+class TestRegimeSizingParity:
+    """
+    Regression test for the manager.py/engine.py sizing parity bug: engine.py
+    used to apply REGIME_SIZE_MULT_BULL unconditionally regardless of the
+    day's regime. Harmless while every multiplier defaulted to 1.0, but a
+    live bug the moment REGIME_SIZE_MULT_BEAR/STRONG_BULL move off 1.0 —
+    see portfolio/manager.py's identical (correct) 3-way branch.
+
+    Under regime="BEAR", strategy/signals.py only ever emits a GOLDBEES BUY
+    (every other position gets MARKET_CRASH_PROTECTION-exited) — so that's
+    the only live signal that reaches the equal-weight sizing branch being
+    tested. GOLD_EQUAL_SLOT_SIZING must be True or GOLDBEES instead takes
+    the separate SAFE_HAVEN_ALLOCATION_PCT cap path, which bypasses the
+    regime multiplier entirely and would defeat this test. REGIME_SWITCH_DAYS
+    is pushed out so hybrid_mode never flips to "defensive" mid-run — that
+    switch has its own independent GOLD sizing/rebalance path too.
+    """
+
+    def test_bear_day_entries_use_bear_mult_not_bull_mult(self, monkeypatch):
+        import backtest.engine as engine_module
+        from config.settings import (
+            SIZER_CASH_BUFFER_PCT, MAX_OPEN_POSITIONS, MAX_STOCK_ALLOCATION_PCT,
+            SAFE_HAVEN_SYMBOL,
+        )
+
+        monkeypatch.setattr(engine_module, "detect_regime", lambda idx_df: "BEAR")
+        monkeypatch.setattr(engine_module, "is_strong_bull", lambda idx_df: False)
+        monkeypatch.setattr(engine_module, "is_buy_allowed", lambda regime: True)
+        monkeypatch.setattr(engine_module, "REGIME_SIZE_MULT_BEAR", 0.3)
+        monkeypatch.setattr(engine_module, "REGIME_SIZE_MULT_BULL", 1.0)
+        monkeypatch.setattr(engine_module, "REGIME_SIZE_MULT_STRONG_BULL", 1.0)
+        monkeypatch.setattr(engine_module, "REGIME_SWITCH_DAYS", 99_999)
+        monkeypatch.setattr(engine_module, "GOLD_EQUAL_SLOT_SIZING", True)
+
+        initial_capital = 100_000.0
+        df = _make_trending_df()
+        data = {
+            "SYNTH1.NS": df,
+            MARKET_INDEX_SYMBOL: df,
+            SAFE_HAVEN_SYMBOL: _make_trending_df(seed=7),
+        }
+        start, end = date(2022, 6, 1), date(2022, 6, 20)
+        engine = BacktestEngine(data, start, end, initial_capital=initial_capital)
+        result = engine.run()
+
+        gold_positions = [p for p in result.final_open_positions if p.symbol == SAFE_HAVEN_SYMBOL]
+        assert gold_positions, "expected a BEAR-regime GOLDBEES entry to still be open"
+
+        entry_value = gold_positions[0].shares * gold_positions[0].entry_price
+        bull_equivalent_slot_cash = (
+            initial_capital * (1.0 - SIZER_CASH_BUFFER_PCT) / MAX_OPEN_POSITIONS
+        )
+        bull_equivalent_slot_cash = min(bull_equivalent_slot_cash, initial_capital * MAX_STOCK_ALLOCATION_PCT)
+
+        # With the parity bug (unconditional REGIME_SIZE_MULT_BULL=1.0 applied
+        # regardless of regime), entry_value would sit near bull_equivalent_slot_cash.
+        # Fixed behavior must size it down toward the 0.3 BEAR mult instead.
+        assert entry_value < bull_equivalent_slot_cash * 0.6
+
+
 class TestMetrics:
     def _run_backtest(self):
         data = {

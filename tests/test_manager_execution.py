@@ -154,6 +154,88 @@ def test_gtt_stop_limit_price_has_fill_buffer():
     assert limit == pytest.approx(expected, abs=0.01)
 
 
+def _expected_shares(cash, portfolio_value, price, mult):
+    """Mirrors the production sizing math in portfolio/manager.py's buy branch."""
+    from config.settings import MAX_OPEN_POSITIONS, MAX_STOCK_ALLOCATION_PCT, SIZER_CASH_BUFFER_PCT
+    from portfolio.sizer import calculate_shares_for_value
+    from charges.calculator import buy_charges
+    from portfolio.manager import round_to_tick
+
+    price = round_to_tick(price)
+    spendable = cash * (1.0 - SIZER_CASH_BUFFER_PCT)
+    base_slot_cash = (spendable / MAX_OPEN_POSITIONS) * mult
+    slot_cash = min(base_slot_cash, portfolio_value * MAX_STOCK_ALLOCATION_PCT)
+    target_val = slot_cash - buy_charges(slot_cash).total
+    return calculate_shares_for_value(target_val, price)
+
+
+def _buy_signal(price=150.0):
+    return Signal(
+        date=TODAY, symbol="XYZ.NS", action="BUY",
+        score=95.0, price=price, reason="RS leader",
+        indicators={"sector": "IT", "atr": 2.0},
+    )
+
+
+def test_bear_regime_applies_bear_size_mult(monkeypatch):
+    monkeypatch.setattr(pm_module, "REGIME_SIZE_MULT_BEAR", 0.5)
+    broker = FakeBroker(cash=100000.0, portfolio_value=100000.0)
+    mgr = make_manager(broker, [])
+
+    mgr.process_signals(TODAY, signals=[_buy_signal()], prices={"XYZ.NS": 150.0},
+                         indicators={"XYZ.NS": {"atr": 2.0, "composite_rank": 95}},
+                         regime="BEAR")
+
+    buys = [o for o in broker.placed_orders if o.side == OrderSide.BUY]
+    assert len(buys) == 1
+    assert buys[0].quantity == _expected_shares(100000.0, 100000.0, 150.0, 0.5)
+
+
+def test_bull_regime_applies_bull_size_mult(monkeypatch):
+    monkeypatch.setattr(pm_module, "REGIME_SIZE_MULT_BULL", 1.0)
+    broker = FakeBroker(cash=100000.0, portfolio_value=100000.0)
+    mgr = make_manager(broker, [])
+
+    mgr.process_signals(TODAY, signals=[_buy_signal()], prices={"XYZ.NS": 150.0},
+                         indicators={"XYZ.NS": {"atr": 2.0, "composite_rank": 95}},
+                         regime="BULL", strong_bull=False)
+
+    buys = [o for o in broker.placed_orders if o.side == OrderSide.BUY]
+    assert len(buys) == 1
+    assert buys[0].quantity == _expected_shares(100000.0, 100000.0, 150.0, 1.0)
+
+
+def test_strong_bull_applies_strong_bull_size_mult(monkeypatch):
+    monkeypatch.setattr(pm_module, "REGIME_SIZE_MULT_STRONG_BULL", 1.5)
+    broker = FakeBroker(cash=100000.0, portfolio_value=100000.0)
+    mgr = make_manager(broker, [])
+
+    mgr.process_signals(TODAY, signals=[_buy_signal()], prices={"XYZ.NS": 150.0},
+                         indicators={"XYZ.NS": {"atr": 2.0, "composite_rank": 95}},
+                         regime="BULL", strong_bull=True)
+
+    buys = [o for o in broker.placed_orders if o.side == OrderSide.BUY]
+    assert len(buys) == 1
+    assert buys[0].quantity == _expected_shares(100000.0, 100000.0, 150.0, 1.5)
+
+
+def test_bear_regime_wins_over_strong_bull_flag(monkeypatch):
+    """BEAR check comes first in the if/elif chain — a stray strong_bull=True
+    during a BEAR day must not override the bear-sizing branch."""
+    monkeypatch.setattr(pm_module, "REGIME_SIZE_MULT_BEAR", 0.5)
+    monkeypatch.setattr(pm_module, "REGIME_SIZE_MULT_STRONG_BULL", 1.5)
+    broker = FakeBroker(cash=100000.0, portfolio_value=100000.0)
+    mgr = make_manager(broker, [])
+
+    mgr.process_signals(TODAY, signals=[_buy_signal()], prices={"XYZ.NS": 150.0},
+                         indicators={"XYZ.NS": {"atr": 2.0, "composite_rank": 95}},
+                         regime="BEAR", strong_bull=True)
+
+    buys = [o for o in broker.placed_orders if o.side == OrderSide.BUY]
+    assert len(buys) == 1
+    assert buys[0].quantity == _expected_shares(100000.0, 100000.0, 150.0, 0.5)
+
+
 def test_cancel_stale_gtts_on_process_signals(monkeypatch):
     """Legacy stop GTTs are cancelled at the start of each run."""
     pos = make_position(symbol="ABC.NS", trailing_stop=90.0)
