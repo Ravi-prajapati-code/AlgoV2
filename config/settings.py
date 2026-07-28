@@ -291,3 +291,11 @@ def round_to_tick(price: float, tick: float = 0.05) -> float:
 IGNORE_SYMBOLS = ["LT.NS", "HCLTECH.NS", "IRFC.NS"]  # manual/legacy holdings, not strategy do-not-trade
                               # (CAMS.NS moved to BLOCKED_SYMBOLS — was a proven-negative trading
                               # verdict, not a manual holding; see docs/30)
+
+# ──────────────────────────────────────────────
+# UNIVERSE SIZE CAP (static, not time-varying — see docs/36)
+# ──────────────────────────────────────────────
+# 0 = disabled (no cap). When set, cmd_backtest ranks the resolved symbol
+# list once by pre-start average turnover and keeps only the top N —
+# same list for the whole backtest window, no monthly/periodic refresh.
+UNIVERSE_CAP_SIZE = int(os.getenv("UNIVERSE_CAP_SIZE", "0"))
