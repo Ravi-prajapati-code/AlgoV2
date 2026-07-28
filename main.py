@@ -158,6 +158,27 @@ def cmd_backtest(args):
         symbols = filter_symbols_with_insufficient_history(symbols, warmup_start - timedelta(days=30))
     data     = fetch_all(symbols, lookback_days=lookback, start=warmup_start, end=end)
 
+    from config.settings import UNIVERSE_CAP_SIZE
+    if UNIVERSE_CAP_SIZE > 0:
+        import pandas as pd
+        cutoff = pd.Timestamp(start)
+
+        def _pre_start_turnover(df):
+            if df is None or df.empty or "close" not in df.columns or "volume" not in df.columns:
+                return 0.0
+            pre = df[df.index < cutoff]
+            if pre.empty:
+                return 0.0
+            return float((pre["close"] * pre["volume"]).mean())
+
+        ranked = sorted(data.keys(), key=lambda s: _pre_start_turnover(data[s]), reverse=True)
+        keep = set(ranked[:UNIVERSE_CAP_SIZE])
+        dropped = len(data) - len(keep)
+        data = {s: df for s, df in data.items() if s in keep}
+        symbols = [s for s in symbols if s in keep]
+        print(f"[UniverseCap] UNIVERSE_CAP_SIZE={UNIVERSE_CAP_SIZE} — kept top "
+              f"{len(keep)} by pre-start avg turnover, dropped {dropped}.")
+
     print(f"Fetching market index {MARKET_INDEX_SYMBOL}…")
     index_df = fetch_index(MARKET_INDEX_SYMBOL, lookback_days=lookback, start=warmup_start, end=end)
     if not index_df.empty:
