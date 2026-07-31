@@ -30,6 +30,7 @@ from data.fetcher import fetch_all, fetch_index
 from data.universe import get_all_symbols, get_sector
 from indicators.composite import compute_all
 from strategy.signals import generate_signals
+from backtest.engine import _compute_sector_durability
 from strategy.regime import detect_regime, is_buy_allowed, MIN_INDEX_CANDLES, is_index_confirming, is_strong_bull
 from strategy.relative_strength import compute_rs_for_all
 from strategy.exit import initial_stops, check_exit_conditions
@@ -760,11 +761,37 @@ def run(today: date = None, live_mode: bool = False, fund_injection: float = 0.0
         # Anti-whipsaw: after regime flips to BULL, wait ENTRY_CONFIRM_DAYS before new entries
         # (mirrors backtest engine; default=0 means no delay)
         entry_confirmed = regime != "BULL" or regime_streak >= ENTRY_CONFIRM_DAYS
+
+        # SECTOR_RS_WEIGHT lever input (mirrors backtest/engine.py): rank sectors
+        # by today's avg rs_rank across the full universe, center to +/-5pts.
+        _sec_rs_sum: dict = {}
+        _sec_rs_n: dict = {}
+        for _sym, _ind in indicators.items():
+            _sec = get_sector(_sym)
+            _rs = _ind.get("rs_rank")
+            if _sec is None or _rs is None:
+                continue
+            _sec_rs_sum[_sec] = _sec_rs_sum.get(_sec, 0.0) + float(_rs)
+            _sec_rs_n[_sec] = _sec_rs_n.get(_sec, 0) + 1
+        sector_rs_rank: dict = {}
+        if len(_sec_rs_sum) >= 2:
+            _sec_rs_avg = {s: _sec_rs_sum[s] / _sec_rs_n[s] for s in _sec_rs_sum}
+            _srs = pd.Series(_sec_rs_avg)
+            sector_rs_rank = ((_srs.rank(pct=True) * 100 - 50) / 10).to_dict()
+
+        # SECTOR_DURABILITY_WEIGHT lever input — was computed in backtest/engine.py
+        # only; live never fed this dict despite the weight being live-configured
+        # (config/settings.py SECTOR_DURABILITY_WEIGHT=1.0). Reuses the exact same
+        # function as backtest for consistency.
+        sector_durability = _compute_sector_durability(load_trades(), today)
+
         signals, surviving_positions = generate_signals(
             today, indicators, open_positions, held_symbols,
             market_bullish=market_bullish, regime=regime,
             portfolio_value=pv, cash=cash_bal, initial_capital=INITIAL_CAPITAL,
-            index_confirming=idx_confirmed and entry_confirmed
+            index_confirming=idx_confirmed and entry_confirmed,
+            sector_durability=sector_durability,
+            sector_rs=sector_rs_rank
         )
         # Persist days_below_ema50 counter so TREND_BREAK accumulates across days
         for pos in surviving_positions:

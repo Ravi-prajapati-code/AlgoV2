@@ -207,6 +207,13 @@ class BacktestEngine:
                     sector_rs_n[_sec] = sector_rs_n.get(_sec, 0) + 1
                 sector_rs_avg = {s: sector_rs_sum[s] / sector_rs_n[s] for s in sector_rs_sum}
 
+                # SECTOR_RS_WEIGHT lever input: rank sectors by today's avg rs_rank,
+                # center to +/-5pts (comparable scale to SECTOR_DURABILITY_WEIGHT).
+                sector_rs_rank: dict = {}
+                if len(sector_rs_avg) >= 2:
+                    _srs = pd.Series(sector_rs_avg)
+                    sector_rs_rank = ((_srs.rank(pct=True) * 100 - 50) / 10).to_dict()
+
                 # ── 2. Regime & Context ───────────────────────────────────
                 first_sym = next(iter(indicators))
                 regime = indicators[first_sym].get("regime", "UNKNOWN")
@@ -673,7 +680,8 @@ class BacktestEngine:
                     portfolio_value=portfolio_val, cash=cash,
                     initial_capital=self.initial_capital,
                     index_confirming=idx_confirmed and entry_confirmed and nifty_pb_ok,
-                    sector_durability=sector_durability
+                    sector_durability=sector_durability,
+                    sector_rs=sector_rs_rank
                 )
 
                 # ── 6. Execute Sells ──────────────────────────────────────

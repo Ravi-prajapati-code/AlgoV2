@@ -149,6 +149,14 @@ SECTOR_DURABILITY_WEIGHT        = float(os.getenv("SECTOR_DURABILITY_WEIGHT", "1
 SECTOR_DURABILITY_LOOKBACK_DAYS = int(os.getenv("SECTOR_DURABILITY_LOOKBACK_DAYS", "180"))
 SECTOR_DURABILITY_MIN_TRADES    = int(os.getenv("SECTOR_DURABILITY_MIN_TRADES", "5"))
 
+# Raw sector-RS nudge to entry score: today's sector-average rs_rank (price/volume
+# momentum vs Nifty, same-day, no trade-outcome dependency), ranked across sectors
+# and centered to +/-5pts so it's comparable in scale to SECTOR_DURABILITY_WEIGHT
+# above. Distinct from durability (which reads the STRATEGY's own past trade P&L
+# per sector): this reads which sector is trending in the MARKET right now. Off by
+# default (weight=0) — new, ungated lever, needs robustness_gate.py before enabling.
+SECTOR_RS_WEIGHT = float(os.getenv("SECTOR_RS_WEIGHT", "0.0"))
+
 # Regime-conditional position sizing (trade_attribution 2026-07-14: BEAR-regime
 # entries WR 60%/+38.6k vs BULL-regime entries ~breakeven/-875 on 5.6x the trade
 # count) -- scales the per-slot cash by regime_at_entry, applied to base_slot_cash
