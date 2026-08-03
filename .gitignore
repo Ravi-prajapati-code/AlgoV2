@@ -8,7 +8,9 @@ __pycache__/
 
 logs/
 outputs/
-data/
+data/**/*.parquet
+data/**/*.json
+data/**/*.db
 db/*.db
 db/*.db.bak
 db/backups/
