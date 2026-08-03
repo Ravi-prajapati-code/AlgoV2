@@ -31,11 +31,14 @@ Usage:
     python3 scripts/robustness_gate.py --env FOO=1 --env BAR=2 --seed 7
 """
 import argparse
+import json
 import os
 import re
+import resource
 import subprocess
 import sys
-from datetime import timedelta
+import time
+from datetime import datetime, timedelta
 
 import numpy as np
 from dotenv import dotenv_values
@@ -55,6 +58,7 @@ from scripts.stress_test_scenarios import (
 )
 
 SCRATCH_DIR = "outputs/robustness_gate_scratch"
+RESEARCH_RUNS_DIR = "research_runs"
 
 # Fixed, inspectable gate rules -- same bright lines that caught the two
 # rejections this session (extension-filter's sideways-chop PF<1 flip).
@@ -192,7 +196,10 @@ def run_stress_both_arms(overrides: dict, history: dict, seed: int) -> dict:
         candidate = run_backtest(scratch_path, str(warmup_start), str(tail_end))
         clear_env(overrides)
 
-        rows[name] = {"baseline": baseline, "candidate": candidate}
+        rows[name] = {
+            "baseline": baseline, "candidate": candidate,
+            "window_start": str(tail_start), "window_end": str(tail_end),
+        }
     return rows
 
 
@@ -254,6 +261,92 @@ def print_stress_section(stress_rows: dict) -> list:
     return failures
 
 
+def _git_info() -> dict:
+    def _run(args):
+        r = subprocess.run(args, capture_output=True, text=True, cwd=REPO_ROOT)
+        return r.stdout.strip() if r.returncode == 0 else None
+    return {
+        "commit_hash": _run(["git", "rev-parse", "--short", "HEAD"]),
+        "branch": _run(["git", "rev-parse", "--abbrev-ref", "HEAD"]),
+    }
+
+
+def _slug_for(overrides: dict) -> str:
+    """research_runs/<slug>.json filename — auto-generated, not a hypothesis
+    name. `experiments.title`/`docs_nn_path` are filled manually later by the
+    researcher (docs/48 §4.1 update rule); this only has to be unique."""
+    key_part = "_".join(f"{k}_{re.sub(r'[^A-Za-z0-9.-]', '', v)}" for k, v in sorted(overrides.items()))
+    return f"gate_{key_part}_{datetime.now().strftime('%Y%m%dT%H%M%S')}"
+
+
+def _oos_metric_row(source: str, r: dict) -> dict:
+    return {
+        "source": source, "cagr": r["cagr"], "sharpe": r["sharpe"],
+        "max_drawdown_pct": r["mdd"], "total_trades": r["n"], "win_rate": r["wr"],
+        "window_start": r["start"], "window_end": r["end"],
+        "profit_factor": r["pf"], "pass": r["pass"],  # not in performance_metrics schema; kept for full fidelity
+    }
+
+
+def _stress_metric_row(source: str, arm_row: dict, window_start: str, window_end: str) -> dict:
+    row = {
+        "source": source, "window_start": window_start, "window_end": window_end,
+        "total_trades": None,
+    }
+    for k in ("cagr", "sharpe", "mdd", "wr", "pf"):
+        row["max_drawdown_pct" if k == "mdd" else "win_rate" if k == "wr"
+            else "profit_factor" if k == "pf" else k] = arm_row.get(k)
+    if "error" in arm_row:
+        row["error"] = arm_row["error"]
+    return row
+
+
+def write_research_json(overrides: dict, seed: int, runtime_ms: int,
+                         baseline_oos: dict, candidate_oos: dict,
+                         stress_rows: dict, all_failures: list):
+    """docs/48 §8.1 — one JSON file per gate run, additive only: never
+    changes gate stdout or exit code. Consumed by scripts/research_db_ingest.py.
+
+    effective_n / p_value are NOT emitted — this gate does not compute
+    distinct-symbol/episode counts or a significance test today, so those
+    performance_metrics columns land NULL on ingest rather than a fabricated
+    value. That is a stated limitation (docs/47 §3.2), not silently glossed
+    over.
+    """
+    os.makedirs(RESEARCH_RUNS_DIR, exist_ok=True)
+    slug = _slug_for(overrides)
+    peak_mem_mb = resource.getrusage(resource.RUSAGE_SELF).ru_maxrss / 1024
+
+    def arm_metrics(oos: dict, arm: str) -> list:
+        rows = [_oos_metric_row(w, oos[w]) for w in ("train", "test", "full")]
+        for name, scenario_rows in stress_rows.items():
+            rows.append(_stress_metric_row(
+                f"stress_{name}", scenario_rows[arm],
+                scenario_rows["window_start"], scenario_rows["window_end"],
+            ))
+        return rows
+
+    payload = {
+        "slug": slug,
+        "generated_at": datetime.now().isoformat(),
+        "seed": seed,
+        "runtime_ms": runtime_ms,
+        "peak_mem_mb": round(peak_mem_mb, 1),
+        "overrides": overrides,
+        "verdict": "REJECT" if all_failures else "PASS",
+        "failures": all_failures,
+        **_git_info(),
+        "arms": {
+            "baseline": {"metrics": arm_metrics(baseline_oos, "baseline")},
+            "candidate": {"metrics": arm_metrics(candidate_oos, "candidate")},
+        },
+    }
+    path = os.path.join(RESEARCH_RUNS_DIR, f"{slug}.json")
+    with open(path, "w") as f:
+        json.dump(payload, f, indent=2)
+    print(f"\n[robustness_gate] research run recorded: {path}")
+
+
 def main():
     ap = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
     ap.add_argument("--env", action="append", default=[], metavar="KEY=VALUE",
@@ -267,6 +360,7 @@ def main():
 
     overrides = dict(kv.split("=", 1) for kv in args.env)
     print(f"[robustness_gate] candidate overrides: {overrides}")
+    run_started = time.perf_counter()
 
     drift = check_config_drift(overrides)
     if drift:
@@ -295,6 +389,10 @@ def main():
         restore_dotenv()
 
     all_failures = oos_failures + stress_failures
+    runtime_ms = int((time.perf_counter() - run_started) * 1000)
+    write_research_json(overrides, args.seed, runtime_ms,
+                         baseline_oos, candidate_oos, stress_rows, all_failures)
+
     print("\n=== VERDICT ===")
     if all_failures:
         print(f"REJECT — {len(all_failures)} gate failure(s):")

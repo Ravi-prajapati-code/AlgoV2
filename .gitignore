@@ -8,6 +8,7 @@ __pycache__/
 
 logs/
 outputs/
+research_runs/
 data/**/*.parquet
 data/**/*.json
 data/**/*.db
