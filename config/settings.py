@@ -262,6 +262,10 @@ DATA_CACHE_DB           = os.getenv("DB_PATH_OVERRIDE", "db/trading.db")
 DB_PATH                 = DATA_CACHE_DB
 OUTPUTS_DIR             = "outputs"
 
+# Research Intelligence Platform (docs/48+49) — physically separate SQLite file
+# from the live-trading DB_PATH above; never attach/query from live trading code.
+RESEARCH_DB_PATH        = os.getenv("RESEARCH_DB_PATH_OVERRIDE", "db/research.db")
+
 # ──────────────────────────────────────────────
 # BACKTEST ACCEPTANCE CRITERIA
 # ──────────────────────────────────────────────
