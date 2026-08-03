@@ -292,6 +292,51 @@ def get_static_symbols_as_of(as_of) -> Optional[List[str]]:
     return sorted(sym for sym, present in membership.items() if present)
 
 
+def get_core_universe_tracking_start() -> Optional[str]:
+    """Earliest ts of any logged CORE-layer event (scanner/hysteresis-driven,
+    i.e. any universe_history row not written by the static-watchlist sync),
+    or None if the CORE engine has never logged anything."""
+    conn = _conn()
+    row = conn.execute(
+        "SELECT MIN(ts) AS start FROM universe_history WHERE operator != ?",
+        (STATIC_SYNC_OPERATOR,),
+    ).fetchone()
+    conn.close()
+    return row["start"] if row and row["start"] else None
+
+
+def get_core_symbols_as_of(as_of) -> List[str]:
+    """
+    Reconstruct CORE-universe membership as of `as_of` (a date) from logged
+    promoted_core/demoted_watchlist/removed events (update_candidate_status()
+    logs every transition with from_status/to_status, so membership is
+    replayed off those two columns rather than matching specific event-name
+    strings).
+
+    Unlike get_static_symbols_as_of(), a date before tracking start returns
+    an empty list, not None/unknown: the discovery+hysteresis engine
+    genuinely did not exist before its first logged event, so "no CORE
+    members" is a known historical fact here, not a gap in the record.
+    """
+    start = get_core_universe_tracking_start()
+    if not start or as_of.isoformat() < start[:10]:
+        return []
+    conn = _conn()
+    rows = conn.execute(
+        "SELECT symbol, from_status, to_status FROM universe_history "
+        "WHERE operator != ? AND ts <= ? ORDER BY ts ASC, id ASC",
+        (STATIC_SYNC_OPERATOR, as_of.isoformat() + " 23:59:59"),
+    ).fetchall()
+    conn.close()
+    in_core: Dict[str, bool] = {}
+    for r in rows:
+        if r["to_status"] == "core":
+            in_core[r["symbol"]] = True
+        elif r["from_status"] == "core":
+            in_core[r["symbol"]] = False
+    return sorted(sym for sym, present in in_core.items() if present)
+
+
 def sync_static_universe_snapshot(current_symbols: List[str], reason: str = "sync") -> int:
     """
     Diff `current_symbols` (config/watchlist_nse.py's ALL_SYMBOLS) against the
