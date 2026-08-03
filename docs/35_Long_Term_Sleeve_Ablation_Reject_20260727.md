@@ -58,3 +58,28 @@ files, netted-out reserve cash, no coupling into swing sizing/backtest)
 so leaving them in place costs nothing and preserves the validator for
 re-use if a genuinely RS-independent long-term selection signal ever
 gets proposed.
+
+## Correction 2026-08-03: "code kept" claim was false — Repository Integrity gap
+
+Verified while backfilling this result into the research DB (docs/48 §9):
+`portfolio/long_term_reserve.py`, `strategy/long_term_selection.py`, and
+`scripts/backtest_long_term_sleeve.py` — the exact validator script that
+produced the TRAIN/TEST/FULL table above — were **never committed to git**
+(`git log --all` on all three paths returns nothing) and no longer exist on
+disk (only stale `__pycache__/*.pyc` remnants remain; presumably deleted
+during the 2026-07-28 cleanup that this doc's own log references, or later).
+The "Code kept... leaving them in place costs nothing" statement above was
+wrong on both counts at the time it was written (never in git) and is now
+also wrong on disk (files gone). `portfolio/manager.py`'s wiring into this
+code was separately caught as uncommitted by docs/44 and removed in
+`1cd103c` (2026-08-03) — that fix closed the manager.py side, but not this.
+
+Same failure class as docs/44's `data/universe.py` finding: a clean clone
+cannot reproduce this result — the validator that generated it is gone. The
+TRAIN/TEST/FULL numbers above are **not currently reproducible**, though
+there is no reason to doubt they were real outputs of a real (if uncommitted)
+run — the REJECT verdict itself is not in question, only the ability to
+re-derive it today. Flagged in `research.db`'s `evidence_ledger` for this
+experiment (`independently_rederived=0`, note explains why) rather than
+silently backfilled as a clean result. If this signal is ever revisited, the
+validator has to be rebuilt from scratch, not "restored."

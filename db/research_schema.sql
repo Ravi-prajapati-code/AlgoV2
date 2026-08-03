@@ -111,3 +111,17 @@ CREATE TABLE IF NOT EXISTS research_decisions (
     decided_at      TEXT NOT NULL DEFAULT (datetime('now'))
 );
 CREATE INDEX IF NOT EXISTS idx_decisions_experiment ON research_decisions(experiment_id);
+
+-- Seed param_taxonomy for levers with a real, already-documented gate/ablation
+-- result (docs/35, 36, 38 Addendum 3, 50) so the docs/35-47 backfill
+-- (scripts/backfill_historical_experiments.py) doesn't hit "unmapped param_key"
+-- on ingest. Not exhaustive -- extend as new params get their first real run.
+INSERT OR IGNORE INTO param_taxonomy (param_key, attribution_dimension, alpha_source, notes) VALUES
+    ('LONG_TERM_REBALANCE_ENABLED', 'stock_selection', 'momentum',
+     'RS-rank>=85 buy-hold sleeve, docs/35. REJECTED; module fully removed 2026-08-03 (1cd103c) -- entry stays for historical attribution even though the param no longer exists in settings.py.'),
+    ('UNIVERSE_CAP_SIZE', 'universe_construction', 'liquidity',
+     'Static top-N-by-turnover universe cap, docs/36. REJECTED (opportunity starvation).'),
+    ('ENTRY_MODE', 'entry_timing', 'trend',
+     'Entry gate mode (PURE_RS default vs FULL strict-AND trend/ADX/breakout gate), docs/38 Addendum 3.'),
+    ('SECTOR_RS_WEIGHT', 'sector', 'sector',
+     'Raw sector price-momentum entry-score nudge, docs/50. REJECTED (guts TEST window).');

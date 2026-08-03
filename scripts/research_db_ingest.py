@@ -116,10 +116,25 @@ def _auto_evidence_flags(metrics_rows):
     }
 
 
-def ingest(path, author_role, title, docs_nn_path, strategy_family, dry_run=False):
+def ingest(path, author_role, title, docs_nn_path, strategy_family, dry_run=False,
+           baseline_strategy_family=None):
+    """`baseline_strategy_family` defaults to `strategy_family` -- correct for the
+    common case (a parameter sweep within one strategy family). Pass it explicitly
+    when baseline and candidate are genuinely different families (e.g. docs/38
+    Addendum 3: baseline=PURE_RS, candidate=FULL -- not a PURE_RS parameter delta)."""
     with open(path) as f:
         payload = json.load(f)
+    ingest_payload(payload, os.path.basename(path), author_role, title, docs_nn_path,
+                    strategy_family, dry_run, baseline_strategy_family)
 
+
+def ingest_payload(payload, source_label, author_role, title, docs_nn_path, strategy_family,
+                    dry_run=False, baseline_strategy_family=None, evidence_notes=None):
+    """Same insert logic as `ingest()`, taking an already-parsed payload dict rather
+    than a JSON file path -- used directly by scripts/backfill_historical_experiments.py
+    for pre-robustness_gate.py historical docs that have no research_runs/*.json file.
+    `evidence_notes`, if given, replaces the default auto-inserted note (e.g. to record
+    that a result is not independently re-derivable -- docs/35's Correction 2026-08-03)."""
     init_research_db()
     conn = get_research_connection()
     try:
@@ -130,35 +145,39 @@ def ingest(path, author_role, title, docs_nn_path, strategy_family, dry_run=Fals
             print(f"Already ingested: {candidate_slug} (or its baseline) exists in research.db. Skipping.")
             return
 
-        strategy_family_id = _get_or_create_strategy_family(conn, strategy_family)
+        candidate_family_id = _get_or_create_strategy_family(conn, strategy_family)
+        baseline_family_id = _get_or_create_strategy_family(
+            conn, baseline_strategy_family if baseline_strategy_family else strategy_family)
         commit_hash, branch = payload.get("commit_hash"), payload.get("branch")
         runtime_ms, peak_mem_mb = payload.get("runtime_ms"), payload.get("peak_mem_mb")
 
         baseline_id = _insert_experiment(
             conn, baseline_slug, f"{title} (baseline arm)", author_role,
-            commit_hash, branch, docs_nn_path, None, strategy_family_id,
+            commit_hash, branch, docs_nn_path, None, baseline_family_id,
             runtime_ms, peak_mem_mb,
         )
         _insert_metrics(conn, baseline_id, payload["arms"]["baseline"]["metrics"])
 
         candidate_id = _insert_experiment(
             conn, candidate_slug, title, author_role,
-            commit_hash, branch, docs_nn_path, baseline_id, strategy_family_id,
+            commit_hash, branch, docs_nn_path, baseline_id, candidate_family_id,
             runtime_ms, peak_mem_mb,
         )
         _insert_metrics(conn, candidate_id, payload["arms"]["candidate"]["metrics"])
         unmapped = _insert_parameter_deltas(conn, candidate_id, payload.get("overrides", {}))
 
         flags = _auto_evidence_flags(payload["arms"]["candidate"]["metrics"])
+        notes = evidence_notes if evidence_notes is not None else (
+            f"Auto-inserted by research_db_ingest.py from {source_label}. "
+            "has_economic_reasoning/config_parity_confirmed/backtest_live_parity_confirmed/"
+            "independently_rederived NOT auto-set — require manual judgment (docs/48 §4.4)."
+        )
         conn.execute(
             """INSERT INTO evidence_ledger
                (experiment_id, train_and_test_reported, stress_tested, effective_n_checked, notes)
                VALUES (?, ?, ?, ?, ?)""",
             (candidate_id, flags["train_and_test_reported"], flags["stress_tested"],
-             flags["effective_n_checked"],
-             f"Auto-inserted by research_db_ingest.py from {os.path.basename(path)}. "
-             "has_economic_reasoning/config_parity_confirmed/backtest_live_parity_confirmed/"
-             "independently_rederived NOT auto-set — require manual judgment (docs/48 §4.4)."),
+             flags["effective_n_checked"], notes),
         )
 
         if dry_run:
@@ -185,13 +204,16 @@ def main():
     ap.add_argument("--docs-path", default=None,
                      help="e.g. docs/50_....md, if this run is already documented")
     ap.add_argument("--strategy-family", default=None,
-                     help="ENTRY_MODE value this run's config resolves to, e.g. PURE_RS")
+                     help="ENTRY_MODE value the candidate arm resolves to, e.g. PURE_RS")
+    ap.add_argument("--baseline-strategy-family", default=None,
+                     help="ENTRY_MODE value the baseline arm resolves to, if different "
+                          "from --strategy-family (e.g. baseline=PURE_RS, candidate=FULL)")
     ap.add_argument("--dry-run", action="store_true",
                      help="parse+validate, print what would be inserted, roll back")
     args = ap.parse_args()
 
     ingest(args.json_path, args.author_role, args.title, args.docs_path,
-           args.strategy_family, args.dry_run)
+           args.strategy_family, args.dry_run, args.baseline_strategy_family)
 
 
 if __name__ == "__main__":

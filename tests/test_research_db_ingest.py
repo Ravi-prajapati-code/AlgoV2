@@ -184,14 +184,9 @@ def test_mapped_param_key_inserts_delta_with_coded_baseline_value(temp_research_
     from scripts.research_db_ingest import ingest
     from db.research_repo import init_research_db, get_research_connection
 
+    # SECTOR_RS_WEIGHT is schema-seeded (db/research_schema.sql, docs/50) --
+    # init_research_db() alone is enough to populate param_taxonomy for it.
     init_research_db()
-    conn = get_research_connection()
-    conn.execute(
-        "INSERT INTO param_taxonomy (param_key, attribution_dimension, alpha_source) "
-        "VALUES ('SECTOR_RS_WEIGHT', 'sector', 'sector')"
-    )
-    conn.commit()
-    conn.close()
 
     json_path = _write_payload(str(tmp_path), _sample_payload(
         overrides={"SECTOR_RS_WEIGHT": "1.0"}))
@@ -253,6 +248,29 @@ def test_control_arm_family_flagged(temp_research_db, tmp_path):
     row = conn.execute("SELECT is_control_arm FROM strategy_family WHERE name = 'REVERSE_RS'").fetchone()
     conn.close()
     assert row["is_control_arm"] == 1
+
+
+def test_baseline_and_candidate_can_have_different_strategy_families(temp_research_db, tmp_path):
+    """docs/38 Addendum 3: baseline=PURE_RS, candidate=FULL -- not a parameter
+    delta within one family, two genuinely different strategy families."""
+    from scripts.research_db_ingest import ingest
+    from db.research_repo import get_research_connection
+
+    json_path = _write_payload(str(tmp_path), _sample_payload())
+    ingest(json_path, author_role="claude", title="FULL vs PURE_RS revalidation",
+           docs_nn_path=None, strategy_family="FULL",
+           baseline_strategy_family="PURE_RS")
+
+    conn = get_research_connection()
+    rows = {r["slug"]: r["strategy_family_id"] for r in conn.execute(
+        "SELECT slug, strategy_family_id FROM experiments")}
+    families = {r["id"]: r["name"] for r in conn.execute("SELECT id, name FROM strategy_family")}
+    conn.close()
+
+    candidate_slug = [s for s in rows if not s.endswith("_baseline")][0]
+    baseline_slug = candidate_slug + "_baseline"
+    assert families[rows[candidate_slug]] == "FULL"
+    assert families[rows[baseline_slug]] == "PURE_RS"
 
 
 def test_gate_json_emission_contract(tmp_path, monkeypatch):
