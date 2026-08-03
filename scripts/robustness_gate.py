@@ -73,7 +73,7 @@ _ENV_DEFAULT_RE = re.compile(r'os\.getenv\(\s*["\']([A-Z_][A-Z_0-9]*)["\']\s*,\s
 _CREDENTIAL_KEY_RE = re.compile(r'(TOKEN|SECRET|KEY|PASSWORD|PIN|TOTP|MOBILE|CHAT_ID)', re.IGNORECASE)
 
 
-def _coded_env_defaults(filepaths: list) -> dict:
+def coded_env_defaults(filepaths: list) -> dict:
     """KEY -> literal default string from every `os.getenv("KEY", "default")`
     call site in the given files (first occurrence wins)."""
     defaults = {}
@@ -113,7 +113,7 @@ def check_config_drift(active_overrides: dict) -> list:
             "\n".join(f"    {line}" for line in dirty.splitlines())
         )
 
-    defaults = _coded_env_defaults([
+    defaults = coded_env_defaults([
         os.path.join(REPO_ROOT, "config", "settings.py"),
         os.path.join(REPO_ROOT, "strategy", "defensive_portfolio.py"),
     ])
@@ -315,7 +315,12 @@ def write_research_json(overrides: dict, seed: int, runtime_ms: int,
     """
     os.makedirs(RESEARCH_RUNS_DIR, exist_ok=True)
     slug = _slug_for(overrides)
-    peak_mem_mb = resource.getrusage(resource.RUSAGE_SELF).ru_maxrss / 1024
+    # Every backtest runs as a subprocess.run child (out_of_sample_validator.py,
+    # stress_test_scenarios.py) -- RUSAGE_SELF would measure this thin orchestrator
+    # process, not the backtest. RUSAGE_CHILDREN.ru_maxrss is the largest RSS among
+    # all reaped children so far, i.e. the peak footprint of the heaviest single
+    # backtest run in this gate invocation.
+    peak_mem_mb = resource.getrusage(resource.RUSAGE_CHILDREN).ru_maxrss / 1024
 
     def arm_metrics(oos: dict, arm: str) -> list:
         rows = [_oos_metric_row(w, oos[w]) for w in ("train", "test", "full")]
