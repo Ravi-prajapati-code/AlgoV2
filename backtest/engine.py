@@ -877,8 +877,19 @@ class BacktestEngine:
 
                             target_value = slot_cash - buy_charges(slot_cash).total
                             shares = calculate_shares_for_value(target_value, exec_price)
+                            est_cost = (shares * exec_price) + buy_charges(shares * exec_price).total
 
-                            if shares > 0:
+                            if shares > 0 and est_cost > cash:
+                                # base_slot_cash is fixed at loop entry from cash-before-this-loop's-
+                                # buys and scaled by REGIME_SIZE_MULT_*; at the default mult=1.0 the
+                                # slots sum to <= spendable by construction, but any mult > 1.0 (the
+                                # regime-tiered sizing knob is meant to be tuned) breaks that and this
+                                # loop never re-checks live cash. Mirrors the bear-swing loop guard.
+                                logger.info(
+                                    f"  [SKIP] {sig.symbol:<12} — est. cost ₹{est_cost:,.0f} "
+                                    f"exceeds available cash ₹{cash:,.0f}"
+                                )
+                            elif shares > 0:
                                 logger.info(f"  [BUY]  {sig.symbol:<12} @ ₹{exec_price:>9,.2f} | RS Rank: {sig.score:.1f} | Exec Date: {exec_date}")
                                 open_positions.append(Position(
                                     symbol=sig.symbol, sector=get_sector(sig.symbol),
