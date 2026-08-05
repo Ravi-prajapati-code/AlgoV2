@@ -127,8 +127,10 @@ def compute_indicators(df: pd.DataFrame, symbol: str = "", rs_metrics: Optional[
     avg_gain = delta.clip(lower=0).ewm(alpha=1.0 / 14, adjust=False).mean()
     avg_loss = (-delta.clip(upper=0)).ewm(alpha=1.0 / 14, adjust=False).mean()
     rs = avg_gain / avg_loss.replace(0, float("nan"))
-    rsi_series = 100 - (100 / (1 + rs))
-    
+    # avg_loss==0 (zero down-days in the lookback) -> rs=NaN -> rsi=NaN;
+    # true RSI there is 100 (matches indicators/momentum.py's compute_rsi).
+    rsi_series = (100 - (100 / (1 + rs))).fillna(100)
+
     rsi = rsi_series.iloc[-1] if not rsi_series.empty else 50
     rsi_prev = rsi_series.iloc[-2] if len(rsi_series) > 1 else rsi
     
