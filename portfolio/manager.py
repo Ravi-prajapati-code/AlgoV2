@@ -638,6 +638,22 @@ class PortfolioManager:
                                 logger.warning(f"  [Risk] Skip {sig.symbol}: {reason}")
                                 continue
 
+                        # base_slot_cash is fixed at the top of this day's loop from
+                        # cash-before-any-of-today's-buys and scaled by REGIME_SIZE_MULT_*
+                        # (currently 1.0 everywhere, but an active tuning knob); it never
+                        # re-derives from self.cash as earlier candidates spend it in the
+                        # same loop, so a later candidate can be sized above what's left.
+                        # A real order here would just get broker-rejected for insufficient
+                        # funds, but that costs a wasted API round-trip during the tight
+                        # pre-close window — cheaper to skip locally first.
+                        est_cost = position_value(shares, price) + buy_charges(position_value(shares, price)).total
+                        if est_cost > self.cash:
+                            logger.warning(
+                                f"  [Risk] Skip {sig.symbol}: est. cost ₹{est_cost:,.0f} "
+                                f"exceeds available cash ₹{self.cash:,.0f}"
+                            )
+                            continue
+
                         # ── 1. Live Broker Execution ──
                         # Run is always at 14:50 IST (market hours) — direct MARKET order, no AMO
                         if self.broker:
