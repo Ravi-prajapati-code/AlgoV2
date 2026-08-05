@@ -41,8 +41,6 @@ def compute_rs_for_all(stock_data: Dict[str, pd.DataFrame], index_df: pd.DataFra
         rs_line = (s_close / index_df.loc[common_idx, 'close'])
         # RS Ratio 6-month: current RS vs 126-day average (trend context)
         rs_ratio = (rs_line.iloc[-1] / rs_line.rolling(window=min(126, len(rs_line))).mean().iloc[-1]) * 100
-        # RS Ratio 1-month: current RS vs 21-day average (acceleration signal)
-        rs_ratio_1m = (rs_line.iloc[-1] / rs_line.rolling(window=min(21, len(rs_line))).mean().iloc[-1]) * 100
 
         # 2. Beta Calculation (Covariance / Variance)
         # We use the last 120 trading days (~6 months) for Beta to capture recent volatility
@@ -68,7 +66,6 @@ def compute_rs_for_all(stock_data: Dict[str, pd.DataFrame], index_df: pd.DataFra
         raw_metrics.append({
             "symbol":     symbol,
             "rs_ratio":   rs_ratio,
-            "rs_ratio_1m": rs_ratio_1m,
             "beta":       beta,
             "atr_pct":    atr_pct,
         })
@@ -85,7 +82,6 @@ def compute_rs_for_all(stock_data: Dict[str, pd.DataFrame], index_df: pd.DataFra
     for _, row in df_metrics.iterrows():
         results[row['symbol']] = {
             "rs_ratio":       row['rs_ratio'],
-            "rs_ratio_1m":    row['rs_ratio_1m'],
             "rs_rank":        row['rs_rank'],
             "composite_rank": row['composite_rank'],
             "beta":           round(row['beta'], 2),

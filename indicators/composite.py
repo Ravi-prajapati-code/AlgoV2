@@ -207,7 +207,6 @@ def compute_indicators(df: pd.DataFrame, symbol: str = "", rs_metrics: Optional[
         "above_bb_mid":   last_price > sma20.iloc[-1],
         "turnover":   avg_turnover,
         "rs_ratio":        rs_metrics.get("rs_ratio",        0)   if rs_metrics else 0,
-        "rs_ratio_1m":     rs_metrics.get("rs_ratio_1m",     0)   if rs_metrics else 0,
         "rs_rank":         rs_metrics.get("rs_rank",         0)   if rs_metrics else 0,
         "composite_rank":  rs_metrics.get("composite_rank",  0)   if rs_metrics else 0,
         "beta":            rs_metrics.get("beta",            1.0) if rs_metrics else 1.0,
