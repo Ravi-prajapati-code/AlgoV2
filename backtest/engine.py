@@ -470,7 +470,17 @@ class BacktestEngine:
                                 continue
                             target_value = slot_cash_capped - buy_charges(slot_cash_capped).total
                             shares = calculate_shares_for_value(target_value, ep)
-                            if shares > 0:
+                            est_cost = (shares * ep) + buy_charges(shares * ep).total
+                            if shares > 0 and est_cost > cash:
+                                # slot_cash is fixed at loop entry from cash-before-this-loop's-buys;
+                                # it doesn't shrink as earlier candidates spend cash within the same
+                                # day, so a later candidate here can be sized above what's actually
+                                # left. can_open_position() only checks allocation %, never cash.
+                                logger.info(
+                                    f"  [BEAR-SKIP] {symbol:<12} — est. cost ₹{est_cost:,.0f} "
+                                    f"exceeds available cash ₹{cash:,.0f}"
+                                )
+                            elif shares > 0:
                                 stops = initial_stops(ep, atr=float(ind.get("atr", 0) or 0))
                                 open_positions.append(Position(
                                     symbol=symbol, sector=get_sector(symbol),
