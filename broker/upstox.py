@@ -492,6 +492,7 @@ class UpstoxBroker(BaseBroker):
             "cancelled":  OrderStatus.CANCELLED,
             "open":       OrderStatus.OPEN,
             "pending":    OrderStatus.PENDING,
+            "partial":    OrderStatus.PARTIAL,
         }
         raw_status = data.get("status", "").lower()
         status = status_map.get(raw_status, OrderStatus.PENDING)

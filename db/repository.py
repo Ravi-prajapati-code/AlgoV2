@@ -210,6 +210,35 @@ def close_position_and_save_trade(symbol: str, t: Trade):
     finally:
         conn.close()
 
+
+def reduce_position_and_save_trade(symbol: str, remaining_shares: int, t: Trade):
+    """Atomically reduce an OPEN position's share count (partial sell — e.g. a
+    LIQUIDBEES trim to fund another entry) and record the sold portion as its
+    own trade, in a single transaction. Mirrors close_position_and_save_trade's
+    all-or-nothing guarantee for the partial case; the position row stays OPEN
+    with entry_price/entry_date unchanged since only share count changed."""
+    conn = get_connection()
+    try:
+        with conn:
+            cur = conn.execute(
+                "UPDATE positions SET shares = ? WHERE symbol = ? AND status = 'OPEN'",
+                (remaining_shares, symbol)
+            )
+            if cur.rowcount != 1:
+                # No matching OPEN row (already closed/reduced concurrently) — abort the
+                # whole transaction so the trade insert below doesn't commit without it.
+                raise RuntimeError(f"reduce_position_and_save_trade: expected 1 OPEN row for {symbol}, matched {cur.rowcount}")
+            conn.execute(
+                """INSERT INTO trades
+                   (symbol, sector, entry_date, exit_date, entry_price, exit_price, shares, gross_pnl, charges, net_pnl, exit_reason, hold_days, slippage_pct)
+                   VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)""",
+                (t.symbol, t.sector, t.entry_date.strftime("%Y-%m-%d"), t.exit_date.strftime("%Y-%m-%d"),
+                 t.entry_price, t.exit_price, t.shares, t.gross_pnl, t.charges, t.net_pnl, t.exit_reason, t.hold_days, t.slippage_pct)
+            )
+    finally:
+        conn.close()
+
+
 def get_last_ohlcv_close(symbol: str) -> float:
     """Return the most recent close price from OHLCV cache. Returns 0.0 if not found."""
     conn = get_connection()

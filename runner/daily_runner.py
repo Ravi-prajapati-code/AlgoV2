@@ -5,6 +5,7 @@ Supports both Paper and Live (Upstox) modes.
 
 import html
 import logging
+import math
 import sys
 import os
 import argparse
@@ -43,7 +44,7 @@ from strategy.defensive_portfolio import (
 from portfolio.manager import PortfolioManager
 from portfolio.allocator import can_open_position
 from portfolio.sizer import calculate_shares_for_value
-from charges.calculator import buy_charges, net_pnl
+from charges.calculator import buy_charges, sell_charges, net_pnl
 from config.settings import round_to_tick
 from runner.signal_output import write_signals, write_portfolio_state
 from config.settings import INITIAL_CAPITAL, MARKET_INDEX_SYMBOL, MAX_STOCK_ALLOCATION_PCT, GOLDBEES_PROFIT_EXIT_ONLY, GOLDBEES_MAX_LOSS_PCT, REGIME_SIZE_MULT_BEAR
@@ -678,7 +679,8 @@ def run(today: date = None, live_mode: bool = False, fund_injection: float = 0.0
                     candidates.append((sym, rs_rank, ind))
             candidates.sort(key=lambda x: x[1], reverse=True)
 
-            liq_remaining = liq_value  # track how much LIQUIDBEES is still available this loop
+            liq_remaining = liq_value  # track how much LIQUIDBEES $ is still available this loop
+            liq_shares_remaining = liq_pos.shares if liq_pos else 0  # and how many shares
             for sym, rs_rank, ind in candidates[:bear_slots_free]:
                 ep = ind["close"] * 1.001
                 slot_cash = (bear_capital / BEAR_SWING_SLOTS) * REGIME_SIZE_MULT_BEAR
@@ -700,9 +702,12 @@ def run(today: date = None, live_mode: bool = False, fund_injection: float = 0.0
                     continue
 
                 # Safe to sell LIQUIDBEES now — BUY is guaranteed to follow
-                if cash_bal < slot_cash_capped and liq_pos and liq_remaining > 0 and liq_price > 0:
+                liq_funded_net = 0.0  # net cash this candidate actually adds to the pool, after sell charges
+                if cash_bal < slot_cash_capped and liq_pos and liq_remaining > 0 and liq_shares_remaining > 0 and liq_price > 0:
                     needed = min(slot_cash_capped - cash_bal, liq_remaining)
-                    liq_sell_shares = min(liq_pos.shares, int(needed / liq_price) + 1)
+                    # ceil, not "+1" — the old "+1" always overshot by up to a full
+                    # share even when needed divided liq_price exactly.
+                    liq_sell_shares = min(liq_shares_remaining, math.ceil(needed / liq_price))
                     if liq_sell_shares > 0:
                         signals.append(Signal(
                             date=today, symbol=LIQUIDBEES, action="SELL",
@@ -710,9 +715,20 @@ def run(today: date = None, live_mode: bool = False, fund_injection: float = 0.0
                             reason="liquidbees_fund_swing",
                             indicators={"sector": "Defensive", "shares_override": liq_sell_shares},
                         ))
-                        liq_remaining -= liq_sell_shares * liq_price
+                        liq_funded_gross = liq_sell_shares * liq_price
+                        liq_funded_net = liq_funded_gross - sell_charges(liq_funded_gross).total
+                        liq_remaining -= liq_funded_gross
+                        liq_shares_remaining -= liq_sell_shares  # else candidate #2 could re-offer shares #1 already sold
                         logger.info("[LIQUIDBEES] Selling %d shares @ ₹%.2f to fund %s swing entry",
                                     liq_sell_shares, liq_price, sym)
+
+                # This candidate's slot draws down the same shared cash pool every
+                # other candidate in this loop checks against — without this, a second
+                # qualifying candidate (BEAR_SWING_SLOTS defaults to 2) would see the
+                # same stale cash_bal and under-size its own LIQUIDBEES top-up, since it
+                # wouldn't know candidate #1 already spent that cash. Net (post-charge)
+                # LIQUIDBEES proceeds, not gross, since that's what actually lands in cash.
+                cash_bal = max(0.0, cash_bal - (slot_cash_capped - liq_funded_net))
 
                 signals.append(Signal(
                     date=today, symbol=sym, action="BUY",

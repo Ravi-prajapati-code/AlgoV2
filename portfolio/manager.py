@@ -583,18 +583,48 @@ class PortfolioManager:
                     atr = sig.indicators.get("atr", 0)
                     stops = initial_stops(price, atr=atr)
 
+                    shares_override = sig.indicators.get("shares_override")
+                    if shares_override is not None:
+                        # Runner already computed the exact quantity (defensive entry,
+                        # bear-swing entry, LIQUIDBEES cash park) — use it as-is instead
+                        # of re-deriving from slot cash.
+                        shares = int(shares_override)
+                        alloc_display = shares * price
+                        est_cost = alloc_display + buy_charges(alloc_display).total
+                        if est_cost > self.cash:
+                            # Defense-in-depth: the runner is trusted to size overrides
+                            # correctly (unlike ordinary slot sizing, this path never
+                            # derives shares from self.cash), so a shortfall here means
+                            # a runner-side sizing bug — e.g. two overrides in the same
+                            # run drawing against the same cash pool without either one
+                            # accounting for the other. Skip and alert rather than send
+                            # a market order the account can't afford.
+                            logger.warning(
+                                f"  [Risk] Skip {sig.symbol}: shares_override cost ₹{est_cost:,.0f} "
+                                f"exceeds available cash ₹{self.cash:,.0f}"
+                            )
+                            try:
+                                from notifications.telegram import send_message
+                                send_message(f"⚠️ <b>Insufficient cash for shares_override BUY</b> — {sig.symbol}\n"
+                                             f"Needs ₹{est_cost:,.0f}, have ₹{self.cash:,.0f}. Skipped — check runner sizing.")
+                            except Exception:
+                                pass
+                            continue
+                        logger.info(f"  [Override] {sig.symbol}: runner-specified {shares} shares @ ₹{price} ({sig.reason})")
                     # Safe haven: deploy up to 50% of portfolio value — limits drawdown from gold volatility
-                    if sig.symbol == SAFE_HAVEN_SYMBOL and not GOLD_EQUAL_SLOT_SIZING:
+                    elif sig.symbol == SAFE_HAVEN_SYMBOL and not GOLD_EQUAL_SLOT_SIZING:
                         max_safe_haven = portfolio_val * SAFE_HAVEN_ALLOCATION_PCT
                         useable_cash = min(self.cash * (1.0 - SIZER_CASH_BUFFER_PCT), max_safe_haven)
                         target_val = useable_cash - buy_charges(useable_cash).total
                         shares = calculate_shares_for_value(target_val, price)
+                        alloc_display = useable_cash
                         logger.info(f"  [SafeHaven] 50% cap allocation: ₹{useable_cash:,.0f} → {shares} shares @ ₹{price}")
                     else:
                         # Equal-weight sizing: cash / available slots, capped at stock cap
                         slot_cash = min(base_slot_cash, portfolio_val * MAX_STOCK_ALLOCATION_PCT)
                         target_val = slot_cash - buy_charges(slot_cash).total
                         shares = calculate_shares_for_value(target_val, price)
+                        alloc_display = slot_cash
 
                     if shares > 0:
                         # Safe haven bypasses stock/sector caps — it's a cash parking mechanism
@@ -613,8 +643,13 @@ class PortfolioManager:
                         if self.broker:
                             from broker.base import OrderRequest, OrderSide, OrderType, OrderStatus
 
-                            # Cancel any pending GTT orders for this symbol before placing new order
-                            cancel_stale_gtts(self.broker, sig.symbol, "pre-BUY cleanup")
+                            # Cancel any pending GTT orders for this symbol before placing new order.
+                            # False means cancellation is unverified (API error or a cancel call
+                            # failed) — treat as "still there" and skip rather than risk a stale
+                            # sell-side GTT firing against the position we're about to open.
+                            if not cancel_stale_gtts(self.broker, sig.symbol, "pre-BUY cleanup"):
+                                logger.warning(f"  [Risk] Skip {sig.symbol}: stale GTT cancellation unverified, not safe to buy")
+                                continue
 
                             logger.info(f"  [Live] Placing MARKET BUY for {sig.symbol} (Qty: {shares})")
                             req = OrderRequest(
@@ -622,7 +657,7 @@ class PortfolioManager:
                                 order_type=OrderType.MARKET,
                             )
                             res = self.broker.place_order_with_retry(req)
-                            if res.status not in (OrderStatus.OPEN, OrderStatus.COMPLETE, OrderStatus.PENDING):
+                            if res.status not in (OrderStatus.OPEN, OrderStatus.COMPLETE, OrderStatus.PENDING, OrderStatus.PARTIAL):
                                 logger.error(f"  [Live] BUY failed for {sig.symbol}: {res.status} | {res.rejection_reason}")
                                 continue
 
@@ -666,7 +701,6 @@ class PortfolioManager:
                             continue
 
                         # ── 2. Local State Update (Paper Trading Only) ──
-                        alloc_display = useable_cash if sig.symbol == SAFE_HAVEN_SYMBOL else slot_cash
                         logger.info(f"  [BUY]  {sig.symbol:<12} @ ₹{price:>9,.2f} | RS Rank: {sig.score:.1f} | Allocation: ₹{alloc_display:,.0f}")
                         new_pos = Position(
                             symbol=sig.symbol, sector=sig.indicators.get("sector", "Unknown"),
@@ -812,27 +846,62 @@ class PortfolioManager:
         )
 
     def _execute_sell(self, today: date, pos: Position, sig: Signal, prices: dict):
-        """Execute a sell order."""
+        """Execute a sell order. Honors sig.indicators['shares_override'] for a
+        partial sell (e.g. a LIQUIDBEES trim to fund another entry) — sells only
+        that many shares and leaves the position OPEN with the remainder, rather
+        than always closing the full position."""
         raw_price = prices.get(sig.symbol, sig.price)
         price = round_to_tick(raw_price)
+
+        override = sig.indicators.get("shares_override")
+        sell_qty = pos.shares
+        if override is not None:
+            override = int(override)
+            if 0 < override < pos.shares:
+                sell_qty = override
+            else:
+                # Invalid override (<=0 or >= current shares) — falls back to the
+                # pre-existing full-sell behavior, but this means the runner asked for
+                # a partial trim and something upstream is wrong (stale share count,
+                # already-partially-filled position, bad calc). Alert loudly rather
+                # than silently full-liquidating as if nothing unusual happened.
+                logger.warning(
+                    f"  [Risk] {pos.symbol}: shares_override={override} invalid for "
+                    f"pos.shares={pos.shares} — falling back to full sell"
+                )
+                try:
+                    from notifications.telegram import send_message
+                    send_message(f"⚠️ <b>Invalid shares_override</b> — {pos.symbol}\n"
+                                 f"override={override}, position shares={pos.shares}. "
+                                 f"Selling full position instead of the requested partial trim.")
+                except Exception:
+                    pass
+        is_partial = sell_qty < pos.shares
 
         # ── 1. Live Broker Execution ──
         # Run at 14:50 IST — immediate MARKET sell, await fill, then close in DB
         if self.broker:
             from broker.base import OrderRequest, OrderSide, OrderType, OrderStatus
 
-            # Cancel any open GTT stop-loss orders before selling — prevents double-sell
-            cancel_stale_gtts(self.broker, pos.symbol, "pre-SELL cleanup")
+            # Cancel any open GTT stop-loss orders before selling — prevents double-sell.
+            # False means cancellation is unverified — treat as "still there" and abort
+            # this sell rather than risk a stale GTT firing alongside our market order.
+            if not cancel_stale_gtts(self.broker, pos.symbol, "pre-SELL cleanup"):
+                logger.warning(f"  [Risk] Abort SELL for {pos.symbol}: stale GTT cancellation unverified")
+                return
 
-            logger.info(f"  [Live] Placing MARKET SELL for {pos.symbol} (Qty: {pos.shares})")
+            logger.info(
+                f"  [Live] Placing MARKET SELL for {pos.symbol} "
+                f"(Qty: {sell_qty}{' partial of ' + str(pos.shares) if is_partial else ''})"
+            )
             req = OrderRequest(
-                symbol=pos.symbol, side=OrderSide.SELL, quantity=pos.shares,
+                symbol=pos.symbol, side=OrderSide.SELL, quantity=sell_qty,
                 order_type=OrderType.MARKET,
             )
             res = self.broker.place_order_with_retry(req)
             if res.order_id:
                 res = self._await_order_completion(res.order_id)
-            if res.status not in (OrderStatus.COMPLETE, OrderStatus.OPEN, OrderStatus.PENDING):
+            if res.status not in (OrderStatus.COMPLETE, OrderStatus.OPEN, OrderStatus.PENDING, OrderStatus.PARTIAL):
                 logger.error(f"  [Live] SELL failed for {pos.symbol}: {res.status} | {res.rejection_reason}")
                 return
             if res.status != OrderStatus.COMPLETE:
@@ -857,7 +926,7 @@ class PortfolioManager:
             logger.info(f"  [Live] MARKET SELL confirmed: {pos.symbol} @ ₹{price:.2f}")
 
         # ── 2. Local State Update (Paper Trading Only) ──
-        result = net_pnl(pos.entry_price, price, pos.shares)        
+        result = net_pnl(pos.entry_price, price, sell_qty)
         # Log actual execution
         logger.info(f"  [SELL] {pos.symbol:<12} @ ₹{price:>9,.2f} | P&L: {result['net_pct']:>+5.1f}% | {sig.reason}")
 
@@ -865,14 +934,35 @@ class PortfolioManager:
             symbol=pos.symbol, sector=pos.sector,
             entry_date=pos.entry_date, exit_date=today,
             entry_price=pos.entry_price, exit_price=price,
-            shares=pos.shares, gross_pnl=result["gross_pnl"],
+            shares=sell_qty, gross_pnl=result["gross_pnl"],
             charges=result["total_charges"], net_pnl=result["net_pnl"],
             exit_reason=sig.reason, hold_days=(today - (pos.entry_date.date() if hasattr(pos.entry_date, 'date') else pos.entry_date)).days
         )
-        
-        # Atomic DB write first — if it raises, in-memory state stays consistent
-        repo.close_position_and_save_trade(pos.symbol, trade)
-        self.cash += (price * pos.shares) - result["sell_charges"]["total"]
-        self.open_positions = [p for p in self.open_positions if p.symbol != pos.symbol]
+
+        # DB write. By this point the broker order (if live) already filled — a write
+        # failure here means real shares/cash moved but the DB missed it, not that the
+        # sell itself failed. Alert and keep going (next broker sync reconciles) rather
+        # than raising and killing the rest of this run's signal processing.
+        try:
+            if is_partial:
+                remaining = pos.shares - sell_qty
+                repo.reduce_position_and_save_trade(pos.symbol, remaining, trade)
+            else:
+                repo.close_position_and_save_trade(pos.symbol, trade)
+        except Exception as e:
+            logger.error(f"  [DB] Failed to record SELL for {pos.symbol} after broker fill: {e}")
+            try:
+                from notifications.telegram import send_message
+                send_message(f"⚠️ <b>DB write failed after SELL fill</b> — {pos.symbol}\n"
+                             f"Qty {sell_qty} @ ₹{price:.2f} sold at broker but not recorded: {e}\n"
+                             f"Check position/trade tables manually.")
+            except Exception:
+                pass
+
+        if is_partial:
+            pos.shares = pos.shares - sell_qty  # keep in-memory Position in sync for rest of this run
+        else:
+            self.open_positions = [p for p in self.open_positions if p.symbol != pos.symbol]
+        self.cash += (price * sell_qty) - result["sell_charges"]["total"]
 
 

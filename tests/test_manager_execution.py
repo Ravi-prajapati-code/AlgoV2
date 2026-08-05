@@ -247,5 +247,184 @@ def test_cancel_stale_gtts_on_process_signals(monkeypatch):
                          indicators={"ABC.NS": {"atr": 1.0}}, regime="BULL")
 
     assert set(broker.cancelled_gtt_ids) == {"GTT1", "GTT2"}
-    assert broker.pending_gtts.get("ABC.NS", []) == []
-    assert any(p.symbol == "ABC.NS" for p in mgr.open_positions)
+
+
+def test_shares_override_sells_partial_and_keeps_position_open():
+    """Regression test for the bug where runner-requested partial sells
+    (e.g. a LIQUIDBEES trim to fund another entry) silently liquidated the
+    entire position because shares_override was never read."""
+    pos = make_position(symbol="ABC.NS", shares=100)
+    broker = FakeBroker()
+    mgr = make_manager(broker, [pos])
+    sell_sig = Signal(
+        date=TODAY, symbol="ABC.NS", action="SELL",
+        score=0, price=105.0, reason="liquidbees_fund_swing",
+        indicators={"shares_override": 40},
+    )
+
+    mgr.process_signals(TODAY, signals=[sell_sig], prices={"ABC.NS": 105.0},
+                         indicators={"ABC.NS": {"atr": 1.0}}, regime="BULL")
+
+    market_sells = [o for o in broker.placed_orders
+                    if o.symbol == "ABC.NS" and o.side == OrderSide.SELL and not o.is_gtt]
+    assert len(market_sells) == 1
+    assert market_sells[0].quantity == 40  # not the full 100
+
+    remaining = [p for p in mgr.open_positions if p.symbol == "ABC.NS"]
+    assert len(remaining) == 1
+    assert remaining[0].shares == 60
+
+    db_positions = [p for p in load_positions() if p.symbol == "ABC.NS"]
+    assert len(db_positions) == 1
+    assert db_positions[0].shares == 60
+    assert db_positions[0].status == "OPEN"
+
+
+def test_shares_override_equal_to_full_position_closes_it():
+    """override == current shares is a full sell, not a zero-share partial —
+    must still close the position rather than leaving a 0-share OPEN row."""
+    pos = make_position(symbol="ABC.NS", shares=100)
+    broker = FakeBroker()
+    mgr = make_manager(broker, [pos])
+    sell_sig = Signal(
+        date=TODAY, symbol="ABC.NS", action="SELL",
+        score=0, price=105.0, reason="liquidbees_fund_swing",
+        indicators={"shares_override": 100},
+    )
+
+    mgr.process_signals(TODAY, signals=[sell_sig], prices={"ABC.NS": 105.0},
+                         indicators={"ABC.NS": {"atr": 1.0}}, regime="BULL")
+
+    assert not any(p.symbol == "ABC.NS" for p in mgr.open_positions)
+    market_sells = [o for o in broker.placed_orders
+                    if o.symbol == "ABC.NS" and o.side == OrderSide.SELL and not o.is_gtt]
+    assert market_sells[0].quantity == 100
+
+
+def test_shares_override_greater_than_position_clamps_to_full_sell():
+    """A defensive override larger than what's actually held (stale runner
+    calc, race with a prior partial fill, etc.) must not oversell — clamp to
+    the full position instead of requesting more shares than exist."""
+    pos = make_position(symbol="ABC.NS", shares=50)
+    broker = FakeBroker()
+    mgr = make_manager(broker, [pos])
+    sell_sig = Signal(
+        date=TODAY, symbol="ABC.NS", action="SELL",
+        score=0, price=105.0, reason="liquidbees_fund_swing",
+        indicators={"shares_override": 500},
+    )
+
+    mgr.process_signals(TODAY, signals=[sell_sig], prices={"ABC.NS": 105.0},
+                         indicators={"ABC.NS": {"atr": 1.0}}, regime="BULL")
+
+    market_sells = [o for o in broker.placed_orders
+                    if o.symbol == "ABC.NS" and o.side == OrderSide.SELL and not o.is_gtt]
+    assert market_sells[0].quantity == 50
+    assert not any(p.symbol == "ABC.NS" for p in mgr.open_positions)
+
+
+def test_shares_override_buy_bypasses_slot_sizing():
+    """Regression test for the bug where runner-requested exact buy quantities
+    (defensive entry, bear-swing entry, LIQUIDBEES cash park) were silently
+    replaced with ordinary equal-weight slot sizing."""
+    broker = FakeBroker(cash=100000.0, portfolio_value=100000.0)
+    mgr = make_manager(broker, [])
+    buy_sig = Signal(
+        date=TODAY, symbol="XYZ.NS", action="BUY",
+        score=0, price=150.0, reason="bear_swing_entry",
+        indicators={"sector": "IT", "shares_override": 37},
+    )
+
+    mgr.process_signals(TODAY, signals=[buy_sig], prices={"XYZ.NS": 150.0},
+                         indicators={"XYZ.NS": {"atr": 2.0, "composite_rank": 95}},
+                         regime="BULL")
+
+    buys = [o for o in broker.placed_orders if o.side == OrderSide.BUY]
+    assert len(buys) == 1
+    assert buys[0].quantity == 37  # not the ordinary slot-sized quantity
+
+
+def test_shares_override_buy_paper_mode_does_not_crash():
+    """Regression test: paper-mode (no broker) BUY execution logs an allocation
+    line that used to reference slot_cash/useable_cash unconditionally — both
+    undefined when shares_override takes the sizing branch, raising
+    UnboundLocalError before the position could ever be recorded."""
+    mgr = make_manager(None, [])
+    buy_sig = Signal(
+        date=TODAY, symbol="XYZ.NS", action="BUY",
+        score=0, price=150.0, reason="bear_swing_entry",
+        indicators={"sector": "IT", "shares_override": 37},
+    )
+
+    mgr.process_signals(TODAY, signals=[buy_sig], prices={"XYZ.NS": 150.0},
+                         indicators={"XYZ.NS": {"atr": 2.0, "composite_rank": 95}},
+                         regime="BULL")
+
+    assert any(p.symbol == "XYZ.NS" and p.shares == 37 for p in mgr.open_positions)
+
+
+def test_shares_override_buy_skipped_when_cash_insufficient():
+    """Regression test for a runner-side bug (docs/55): daily_runner.py's
+    bear-swing loop could double-count the same spare-cash pool across two
+    qualifying candidates in one run, under-sizing the second candidate's
+    LIQUIDBEES funding sell. shares_override bypasses normal cash-derived
+    sizing entirely, so with no local check a runner sizing bug would send a
+    market order the account can't afford. Manager must refuse instead."""
+    mgr = make_manager(None, [])
+    mgr.cash = 1000.0  # far less than 37 * 150 + charges
+    buy_sig = Signal(
+        date=TODAY, symbol="XYZ.NS", action="BUY",
+        score=0, price=150.0, reason="bear_swing_entry",
+        indicators={"sector": "IT", "shares_override": 37},
+    )
+
+    mgr.process_signals(TODAY, signals=[buy_sig], prices={"XYZ.NS": 150.0},
+                         indicators={"XYZ.NS": {"atr": 2.0, "composite_rank": 95}},
+                         regime="BULL")
+
+    assert not any(p.symbol == "XYZ.NS" for p in mgr.open_positions)
+    assert mgr.cash == 1000.0  # untouched
+
+
+def test_unverified_gtt_cancel_blocks_new_buy():
+    """Regression test for the bug where cancel_stale_gtts()'s False return
+    (unverified cancellation) was ignored and the BUY proceeded anyway."""
+    broker = FakeBroker(cash=100000.0, portfolio_value=100000.0)
+    broker.pending_gtts["XYZ.NS"] = ["STALE_GTT"]
+    broker.cancel_should_fail.add("STALE_GTT")
+    mgr = make_manager(broker, [])
+    buy_sig = Signal(
+        date=TODAY, symbol="XYZ.NS", action="BUY",
+        score=95.0, price=150.0, reason="MOMENTUM",
+        indicators={"sector": "IT"},
+    )
+
+    mgr.process_signals(TODAY, signals=[buy_sig], prices={"XYZ.NS": 150.0},
+                         indicators={"XYZ.NS": {"atr": 2.0, "composite_rank": 95}},
+                         regime="BULL")
+
+    buys = [o for o in broker.placed_orders if o.side == OrderSide.BUY]
+    assert buys == []  # must not buy alongside an unverified stale GTT
+    assert not any(p.symbol == "XYZ.NS" for p in mgr.open_positions)
+
+
+def test_unverified_gtt_cancel_blocks_sell():
+    """Regression test for the same bug on the SELL side — a stale sell-side
+    GTT that failed to cancel must not be joined by a second market sell."""
+    pos = make_position(symbol="ABC.NS", shares=10)
+    broker = FakeBroker()
+    broker.pending_gtts["ABC.NS"] = ["STALE_GTT"]
+    broker.cancel_should_fail.add("STALE_GTT")
+    mgr = make_manager(broker, [pos])
+    sell_sig = Signal(
+        date=TODAY, symbol="ABC.NS", action="SELL",
+        score=0, price=105.0, reason="TREND_BREAK",
+    )
+
+    mgr.process_signals(TODAY, signals=[sell_sig], prices={"ABC.NS": 105.0},
+                         indicators={"ABC.NS": {"atr": 1.0}}, regime="BULL")
+
+    market_sells = [o for o in broker.placed_orders
+                    if o.symbol == "ABC.NS" and o.side == OrderSide.SELL and not o.is_gtt]
+    assert market_sells == []  # must abort rather than sell alongside an unverified stale GTT
+    assert any(p.symbol == "ABC.NS" for p in mgr.open_positions)  # position left open
