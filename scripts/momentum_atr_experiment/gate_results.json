@@ -1,0 +1,372 @@
+{
+  "baseline": {
+    "TRAIN": {
+      "cagr": 52.99,
+      "total_return_pct": 186.98,
+      "max_dd_pct": -25.18,
+      "n_trades": 840,
+      "sharpe": 1.42,
+      "final_equity": 286984.52,
+      "pf": 1.85
+    },
+    "TEST": {
+      "cagr": 78.89,
+      "total_return_pct": 82.34,
+      "max_dd_pct": -16.22,
+      "n_trades": 351,
+      "sharpe": 2.53,
+      "final_equity": 182341.21,
+      "pf": 1.578
+    }
+  },
+  "candidates": {
+    "A_TOP1": {
+      "TRAIN": {
+        "cagr": 82.54,
+        "total_return_pct": 344.65,
+        "max_dd_pct": -34.79,
+        "n_trades": 191,
+        "sharpe": 1.47,
+        "final_equity": 444647.17,
+        "pf": 1.901
+      },
+      "TEST": {
+        "cagr": 110.54,
+        "total_return_pct": 115.76,
+        "max_dd_pct": -15.11,
+        "n_trades": 83,
+        "sharpe": 2.55,
+        "final_equity": 215756.17,
+        "pf": 3.019
+      }
+    },
+    "A_TOP2": {
+      "TRAIN": {
+        "cagr": 79.79,
+        "total_return_pct": 328.23,
+        "max_dd_pct": -26.71,
+        "n_trades": 439,
+        "sharpe": 1.66,
+        "final_equity": 428229.64,
+        "pf": 2.248
+      },
+      "TEST": {
+        "cagr": 86.31,
+        "total_return_pct": 90.16,
+        "max_dd_pct": -14.84,
+        "n_trades": 179,
+        "sharpe": 2.42,
+        "final_equity": 190163.35,
+        "pf": 2.532
+      }
+    },
+    "A_TOP5": {
+      "TRAIN": {
+        "cagr": 39.65,
+        "total_return_pct": 128.87,
+        "max_dd_pct": -22.42,
+        "n_trades": 1671,
+        "sharpe": 1.29,
+        "final_equity": 228867.92,
+        "pf": 1.684
+      },
+      "TEST": {
+        "cagr": 61.14,
+        "total_return_pct": 63.69,
+        "max_dd_pct": -21.75,
+        "n_trades": 510,
+        "sharpe": 2.11,
+        "final_equity": 163688.02,
+        "pf": 1.433
+      }
+    },
+    "A_TOP10": {
+      "TRAIN": {
+        "cagr": 38.13,
+        "total_return_pct": 122.77,
+        "max_dd_pct": -22.68,
+        "n_trades": 2683,
+        "sharpe": 1.35,
+        "final_equity": 222770.85,
+        "pf": 1.887
+      },
+      "TEST": {
+        "cagr": 32.18,
+        "total_return_pct": 33.4,
+        "max_dd_pct": -19.09,
+        "n_trades": 859,
+        "sharpe": 1.43,
+        "final_equity": 133398.98,
+        "pf": 1.062
+      }
+    },
+    "B_RANK_GT6": {
+      "TRAIN": {
+        "cagr": 32.94,
+        "total_return_pct": 102.57,
+        "max_dd_pct": -24.97,
+        "n_trades": 527,
+        "sharpe": 1.06,
+        "final_equity": 202568.02,
+        "pf": 1.571
+      },
+      "TEST": {
+        "cagr": 60.97,
+        "total_return_pct": 63.51,
+        "max_dd_pct": -23.88,
+        "n_trades": 215,
+        "sharpe": 2.1,
+        "final_equity": 163509.61,
+        "pf": 1.648
+      }
+    },
+    "B_CONSEC3": {
+      "TRAIN": {
+        "cagr": 40.88,
+        "total_return_pct": 133.93,
+        "max_dd_pct": -24.48,
+        "n_trades": 474,
+        "sharpe": 1.17,
+        "final_equity": 233930.93,
+        "pf": 1.571
+      },
+      "TEST": {
+        "cagr": 53.67,
+        "total_return_pct": 55.85,
+        "max_dd_pct": -21.24,
+        "n_trades": 197,
+        "sharpe": 1.92,
+        "final_equity": 155850.94,
+        "pf": 1.418
+      }
+    },
+    "C_FREEZE30": {
+      "TRAIN": {
+        "cagr": 27.2,
+        "total_return_pct": 81.59,
+        "max_dd_pct": -35.52,
+        "n_trades": 123,
+        "sharpe": 0.88,
+        "final_equity": 181585.61,
+        "pf": 1.508
+      },
+      "TEST": {
+        "cagr": 26.65,
+        "total_return_pct": 27.64,
+        "max_dd_pct": -24.27,
+        "n_trades": 47,
+        "sharpe": 1.25,
+        "final_equity": 127641.24,
+        "pf": 1.389
+      }
+    }
+  },
+  "stress": {
+    "baseline": {
+      "crash_v_recovery": {
+        "pf": 1.043,
+        "n_trades": 176
+      },
+      "extended_bear_grind": {
+        "pf": 0.994,
+        "n_trades": 442
+      },
+      "prolonged_sideways_chop": {
+        "pf": 1.402,
+        "n_trades": 426
+      },
+      "gap_down_bleed": {
+        "pf": 0.895,
+        "n_trades": 389
+      }
+    },
+    "candidates": {
+      "A_TOP1": {
+        "crash_v_recovery": {
+          "pf": 1.121,
+          "n_trades": 40
+        },
+        "extended_bear_grind": {
+          "pf": 1.105,
+          "n_trades": 114
+        },
+        "prolonged_sideways_chop": {
+          "pf": 1.224,
+          "n_trades": 124
+        },
+        "gap_down_bleed": {
+          "pf": 1.144,
+          "n_trades": 77
+        }
+      },
+      "A_TOP2": {
+        "crash_v_recovery": {
+          "pf": 1.296,
+          "n_trades": 97
+        },
+        "extended_bear_grind": {
+          "pf": 1.182,
+          "n_trades": 254
+        },
+        "prolonged_sideways_chop": {
+          "pf": 1.089,
+          "n_trades": 278
+        },
+        "gap_down_bleed": {
+          "pf": 1.32,
+          "n_trades": 213
+        }
+      },
+      "A_TOP5": {
+        "crash_v_recovery": {
+          "pf": 1.032,
+          "n_trades": 248
+        },
+        "extended_bear_grind": {
+          "pf": 0.86,
+          "n_trades": 738
+        },
+        "prolonged_sideways_chop": {
+          "pf": 1.439,
+          "n_trades": 642
+        },
+        "gap_down_bleed": {
+          "pf": 0.823,
+          "n_trades": 565
+        }
+      },
+      "A_TOP10": {
+        "crash_v_recovery": {
+          "pf": 0.695,
+          "n_trades": 300
+        },
+        "extended_bear_grind": {
+          "pf": 0.718,
+          "n_trades": 839
+        },
+        "prolonged_sideways_chop": {
+          "pf": 1.109,
+          "n_trades": 835
+        },
+        "gap_down_bleed": {
+          "pf": 0.569,
+          "n_trades": 661
+        }
+      },
+      "B_RANK_GT6": {
+        "crash_v_recovery": {
+          "pf": 1.544,
+          "n_trades": 59
+        },
+        "extended_bear_grind": {
+          "pf": 0.873,
+          "n_trades": 251
+        },
+        "prolonged_sideways_chop": {
+          "pf": 1.564,
+          "n_trades": 215
+        },
+        "gap_down_bleed": {
+          "pf": 1.057,
+          "n_trades": 210
+        }
+      },
+      "B_CONSEC3": {
+        "crash_v_recovery": {
+          "pf": 0.847,
+          "n_trades": 91
+        },
+        "extended_bear_grind": {
+          "pf": 0.85,
+          "n_trades": 261
+        },
+        "prolonged_sideways_chop": {
+          "pf": 1.46,
+          "n_trades": 231
+        },
+        "gap_down_bleed": {
+          "pf": 0.503,
+          "n_trades": 198
+        }
+      },
+      "C_FREEZE30": {
+        "crash_v_recovery": {
+          "pf": 0.624,
+          "n_trades": 39
+        },
+        "extended_bear_grind": {
+          "pf": 0.637,
+          "n_trades": 57
+        },
+        "prolonged_sideways_chop": {
+          "pf": 0.975,
+          "n_trades": 59
+        },
+        "gap_down_bleed": {
+          "pf": 0.525,
+          "n_trades": 46
+        }
+      }
+    }
+  },
+  "verdicts": {
+    "A_TOP1": {
+      "verdict": "REJECT",
+      "failures": [
+        "stress[prolonged_sideways_chop] pf 1.224 < 1.302 (baseline 1.402, drop-max 0.1)"
+      ]
+    },
+    "A_TOP2": {
+      "verdict": "REJECT",
+      "failures": [
+        "stress[prolonged_sideways_chop] pf 1.089 < 1.302 (baseline 1.402, drop-max 0.1)"
+      ]
+    },
+    "A_TOP5": {
+      "verdict": "REJECT",
+      "failures": [
+        "TEST sharpe 2.11 < 2.277 (baseline 2.53, tol 0.1)",
+        "stress[extended_bear_grind] pf 0.86 < 0.894 (baseline 0.994, drop-max 0.1)"
+      ]
+    },
+    "A_TOP10": {
+      "verdict": "REJECT",
+      "failures": [
+        "TEST sharpe 1.43 < 2.277 (baseline 2.53, tol 0.1)",
+        "TEST pf 1.062 < 1.42 (baseline 1.578, tol 0.1)",
+        "stress[crash_v_recovery] pf 0.695 < 0.943 (baseline 1.043, drop-max 0.1)",
+        "stress[extended_bear_grind] pf 0.718 < 0.894 (baseline 0.994, drop-max 0.1)",
+        "stress[prolonged_sideways_chop] pf 1.109 < 1.302 (baseline 1.402, drop-max 0.1)",
+        "stress[gap_down_bleed] pf 0.569 < 0.795 (baseline 0.895, drop-max 0.1)"
+      ]
+    },
+    "B_RANK_GT6": {
+      "verdict": "REJECT",
+      "failures": [
+        "TEST sharpe 2.1 < 2.277 (baseline 2.53, tol 0.1)",
+        "stress[extended_bear_grind] pf 0.873 < 0.894 (baseline 0.994, drop-max 0.1)"
+      ]
+    },
+    "B_CONSEC3": {
+      "verdict": "REJECT",
+      "failures": [
+        "TEST sharpe 1.92 < 2.277 (baseline 2.53, tol 0.1)",
+        "TEST pf 1.418 < 1.42 (baseline 1.578, tol 0.1)",
+        "stress[crash_v_recovery] pf 0.847 < 0.943 (baseline 1.043, drop-max 0.1)",
+        "stress[extended_bear_grind] pf 0.85 < 0.894 (baseline 0.994, drop-max 0.1)",
+        "stress[gap_down_bleed] pf 0.503 < 0.795 (baseline 0.895, drop-max 0.1)"
+      ]
+    },
+    "C_FREEZE30": {
+      "verdict": "REJECT",
+      "failures": [
+        "TEST sharpe 1.25 < 2.277 (baseline 2.53, tol 0.1)",
+        "TEST pf 1.389 < 1.42 (baseline 1.578, tol 0.1)",
+        "stress[crash_v_recovery] pf 0.624 < 0.943 (baseline 1.043, drop-max 0.1)",
+        "stress[extended_bear_grind] pf 0.637 < 0.894 (baseline 0.994, drop-max 0.1)",
+        "stress[prolonged_sideways_chop] pf 0.975 < 1.302 (baseline 1.402, drop-max 0.1)",
+        "stress[gap_down_bleed] pf 0.525 < 0.795 (baseline 0.895, drop-max 0.1)"
+      ]
+    }
+  }
+}

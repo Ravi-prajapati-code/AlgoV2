@@ -266,6 +266,18 @@ OUTPUTS_DIR             = "outputs"
 # from the live-trading DB_PATH above; never attach/query from live trading code.
 RESEARCH_DB_PATH        = os.getenv("RESEARCH_DB_PATH_OVERRIDE", "db/research.db")
 
+# Momentum x ATR standalone live strategy (docs/57, docs/58) — physically
+# separate SQLite file and capital ledger from the main live strategy above;
+# never attach/query from the main strategy's code path (db/schema.sql's
+# positions.symbol TEXT NOT NULL UNIQUE means a shared symbol would silently
+# clobber the other strategy's entry price/shares — see plan
+# velvet-cooking-minsky). Kill-switch is its own named constant, deliberately
+# not DRAWDOWN_KILL_SWITCH_PCT above, which this codebase has drifting
+# env/yaml values for.
+MOMENTUM_ATR_DB_PATH         = os.getenv("MOMENTUM_ATR_DB_PATH_OVERRIDE", "db/momentum_atr.db")
+MOMENTUM_ATR_INITIAL_CAPITAL = float(os.getenv("MOMENTUM_ATR_INITIAL_CAPITAL", 100000))
+MOMENTUM_ATR_DD_KILL_PCT     = float(os.getenv("MOMENTUM_ATR_DD_KILL_PCT", 0.25))
+
 # ──────────────────────────────────────────────
 # BACKTEST ACCEPTANCE CRITERIA
 # ──────────────────────────────────────────────

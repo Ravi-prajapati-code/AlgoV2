@@ -1,0 +1,44 @@
+baseline TRAIN/TEST done
+A_TOP1 TRAIN/TEST done
+A_TOP2 TRAIN/TEST done
+A_TOP5 TRAIN/TEST done
+A_TOP10 TRAIN/TEST done
+B_RANK_GT6 TRAIN/TEST done
+B_CONSEC3 TRAIN/TEST done
+C_FREEZE30 TRAIN/TEST done
+stress crash_v_recovery done
+stress extended_bear_grind done
+stress prolonged_sideways_chop done
+stress gap_down_bleed done
+
+=== VERDICTS ===
+A_TOP1: REJECT
+    - stress[prolonged_sideways_chop] pf 1.224 < 1.302 (baseline 1.402, drop-max 0.1)
+A_TOP2: REJECT
+    - stress[prolonged_sideways_chop] pf 1.089 < 1.302 (baseline 1.402, drop-max 0.1)
+A_TOP5: REJECT
+    - TEST sharpe 2.11 < 2.277 (baseline 2.53, tol 0.1)
+    - stress[extended_bear_grind] pf 0.86 < 0.894 (baseline 0.994, drop-max 0.1)
+A_TOP10: REJECT
+    - TEST sharpe 1.43 < 2.277 (baseline 2.53, tol 0.1)
+    - TEST pf 1.062 < 1.42 (baseline 1.578, tol 0.1)
+    - stress[crash_v_recovery] pf 0.695 < 0.943 (baseline 1.043, drop-max 0.1)
+    - stress[extended_bear_grind] pf 0.718 < 0.894 (baseline 0.994, drop-max 0.1)
+    - stress[prolonged_sideways_chop] pf 1.109 < 1.302 (baseline 1.402, drop-max 0.1)
+    - stress[gap_down_bleed] pf 0.569 < 0.795 (baseline 0.895, drop-max 0.1)
+B_RANK_GT6: REJECT
+    - TEST sharpe 2.1 < 2.277 (baseline 2.53, tol 0.1)
+    - stress[extended_bear_grind] pf 0.873 < 0.894 (baseline 0.994, drop-max 0.1)
+B_CONSEC3: REJECT
+    - TEST sharpe 1.92 < 2.277 (baseline 2.53, tol 0.1)
+    - TEST pf 1.418 < 1.42 (baseline 1.578, tol 0.1)
+    - stress[crash_v_recovery] pf 0.847 < 0.943 (baseline 1.043, drop-max 0.1)
+    - stress[extended_bear_grind] pf 0.85 < 0.894 (baseline 0.994, drop-max 0.1)
+    - stress[gap_down_bleed] pf 0.503 < 0.795 (baseline 0.895, drop-max 0.1)
+C_FREEZE30: REJECT
+    - TEST sharpe 1.25 < 2.277 (baseline 2.53, tol 0.1)
+    - TEST pf 1.389 < 1.42 (baseline 1.578, tol 0.1)
+    - stress[crash_v_recovery] pf 0.624 < 0.943 (baseline 1.043, drop-max 0.1)
+    - stress[extended_bear_grind] pf 0.637 < 0.894 (baseline 0.994, drop-max 0.1)
+    - stress[prolonged_sideways_chop] pf 0.975 < 1.302 (baseline 1.402, drop-max 0.1)
+    - stress[gap_down_bleed] pf 0.525 < 0.795 (baseline 0.895, drop-max 0.1)

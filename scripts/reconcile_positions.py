@@ -78,6 +78,22 @@ def get_db_symbols() -> set:
     return {p.symbol for p in load_positions("OPEN")}
 
 
+def get_momentum_atr_symbols() -> set:
+    """Open symbols the standalone momentum_atr strategy (docs/57, docs/58)
+    holds on the same shared Upstox account, from its own isolated DB
+    (db/momentum_atr.db, never db/trading.db). Without this, a symbol only
+    momentum_atr bought looks like a "broker-only unknown position" to this
+    reconciler and gets auto-inserted into the MAIN strategy's db/trading.db
+    -- corrupting it, not just false-alerting (see plan velvet-cooking-minsky,
+    open risk #1: shared-broker fungibility)."""
+    try:
+        from db import momentum_atr_repo
+        return {p.symbol for p in momentum_atr_repo.load_positions("OPEN")}
+    except Exception as e:
+        logger.warning("Could not load momentum_atr positions (DB not initialised?): %s", e)
+        return set()
+
+
 def run_reconcile():
     now_str = date.today().strftime("%d %b %Y")
     logger.info("Starting reconciliation — %s", now_str)
@@ -96,11 +112,13 @@ def run_reconcile():
 
     broker_syms = {p.symbol for p in broker_positions}
     db_syms = get_db_symbols()
+    momentum_atr_syms = get_momentum_atr_symbols()
 
-    ghost = db_syms - broker_syms      # DB open, broker doesn't have it — alert only
-    unknown = broker_syms - db_syms    # Broker holds, DB doesn't know — auto-fixed below
+    ghost = db_syms - broker_syms                            # DB open, broker doesn't have it — alert only
+    unknown = broker_syms - db_syms - momentum_atr_syms       # Broker holds, neither ledger knows — auto-fixed below
 
     logger.info("DB open: %s", db_syms)
+    logger.info("momentum_atr open: %s", momentum_atr_syms)
     logger.info("Broker holds: %s", broker_syms)
     logger.info("Ghost (DB-only): %s", ghost)
     logger.info("Unknown (broker-only): %s", unknown)

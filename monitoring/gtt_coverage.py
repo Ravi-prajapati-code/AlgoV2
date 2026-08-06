@@ -69,9 +69,25 @@ def check() -> int:
         return 1
 
     protected = _protected_symbols()
+
+    # momentum_atr (docs/57, docs/58) shares this Upstox account but places
+    # no GTT stops at all (signal-only exits, matches its own backtest) --
+    # if it ever holds SAFE_HAVEN_SYMBOL too, the combined broker quantity
+    # can't be attributed per-strategy (shared-broker fungibility, plan
+    # velvet-cooking-minsky open risk #1), so skip rather than false-flag.
+    try:
+        from db import momentum_atr_repo
+        momentum_atr_syms = {p.symbol for p in momentum_atr_repo.load_positions("OPEN")}
+    except Exception as e:
+        logger.warning("Could not load momentum_atr positions (DB not initialised?): %s", e)
+        momentum_atr_syms = set()
+
     naked = []
     for pos in holdings:
         if pos.quantity <= 0 or pos.symbol not in protected:
+            continue
+        if pos.symbol in momentum_atr_syms:
+            logger.info("Skipping naked-check for %s -- also held by momentum_atr (fungibility).", pos.symbol)
             continue
         key = broker._resolve_instrument(pos.symbol)
         if key not in gtt_keys:
