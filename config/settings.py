@@ -23,6 +23,14 @@ BASE_DIR = Path(__file__).parent.parent
 RISK_CONFIG_PATH = BASE_DIR / "config" / "risk_config.yaml"
 STRATEGY_CONFIG_PATH = BASE_DIR / "config" / "strategy_config.yaml"
 
+# Explicit env tier -- defaults to "local" everywhere except the production
+# server's own .env (set DEPLOY_ENV=production there). A local dev crash
+# still triggers the same real Telegram alert path as production (shared
+# bot/chat) -- this lets alert callers mark local-origin messages so they
+# aren't mistaken for real production incidents.
+DEPLOY_ENV = os.getenv("DEPLOY_ENV", "local")
+IS_PRODUCTION = DEPLOY_ENV == "production"
+
 def load_yaml(path):
     if not path.exists():
         return {}

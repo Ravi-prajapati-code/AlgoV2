@@ -39,6 +39,16 @@ logging.basicConfig(
 logger = logging.getLogger("MomentumATRRunner")
 
 
+def _env_prefix() -> str:
+    """Local dev runs and the production cron share one real Telegram
+    chat/bot -- a local crash during testing sends a real alert
+    indistinguishable from a genuine production incident (happened once,
+    2026-08-06: a local dry-run's pre-init_db() crash read as a live abort).
+    Prefix anything not from the production server so it's unambiguous."""
+    from config.settings import IS_PRODUCTION
+    return "" if IS_PRODUCTION else "[LOCAL TEST] "
+
+
 def _alert_abort(today: date, reason: str) -> None:
     """Best-effort Telegram alert on abort -- mirrors
     runner/daily_runner.py:_alert_run_abort. A silently-skipped run leaves
@@ -46,7 +56,7 @@ def _alert_abort(today: date, reason: str) -> None:
     try:
         from notifications.telegram import send_message
         send_message(
-            f"\U0001F6D1 <b>momentum_atr run ABORTED -- {today}</b>\n"
+            f"{_env_prefix()}\U0001F6D1 <b>momentum_atr run ABORTED -- {today}</b>\n"
             f"Reason: {html.escape(str(reason))}\n\n"
             f"No orders placed today. Any open momentum_atr positions are "
             f"UNMANAGED until the next run."
@@ -61,7 +71,7 @@ def _send_summary_alert(today: date, dry_run: bool, summary: dict) -> None:
     try:
         from notifications.telegram import send_message
         mode = "DRY-RUN" if dry_run else "LIVE"
-        lines = [f"<b>momentum_atr [{mode}] -- {today}</b>"]
+        lines = [f"{_env_prefix()}<b>momentum_atr [{mode}] -- {today}</b>"]
         if dry_run:
             for o in summary.get("planned_orders", []):
                 lines.append(f"- would {o['side']} {o['qty']} {o['symbol']}")
