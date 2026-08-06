@@ -21,7 +21,7 @@ import pytest
 
 sys.path.insert(0, "scripts/momentum_atr_experiment")
 
-from broker.base import BaseBroker, OrderResult, OrderStatus
+from broker.base import BaseBroker, LivePosition, OrderResult, OrderStatus
 from momentum_atr.models import Position
 
 
@@ -104,13 +104,17 @@ class FakeBroker(BaseBroker):
     """Fills every order COMPLETE at the requested symbol's mapped price,
     unless the symbol is registered in force_reject/force_partial."""
 
-    def __init__(self, prices, cash=10_000_000):
+    def __init__(self, prices, cash=10_000_000, holdings=None):
         self.prices = dict(prices)
         self.cash = cash
         self._orders = {}
         self._oid = 0
         self.force_reject = set()
         self.force_partial = {}
+        # Real-account holdings for the 40%-of-total allocation cap (both
+        # strategies' positions combined -- empty by default so existing
+        # tests' cap (0.40 * cash) stays far above their small test amounts.
+        self.holdings = holdings or []
 
     def place_order(self, request):
         self._oid += 1
@@ -145,6 +149,9 @@ class FakeBroker(BaseBroker):
 
     def get_available_cash(self):
         return self.cash
+
+    def get_holdings(self):
+        return self.holdings
 
 
 TODAY = date(2026, 8, 6)
@@ -288,3 +295,40 @@ def test_partial_fill_leaves_ledger_untouched(momentum_atr_env, monkeypatch):
     execution.run_daily(broker, TODAY)
 
     assert "A" not in {p.symbol for p in repo.load_positions("OPEN")}
+
+
+def test_allocation_cap_limits_effective_cash(momentum_atr_env):
+    """Real broker cash Rs.60k + other-strategy holding Rs.10k = Rs.70k total
+    account equity. At 40% allocation that's a Rs.28k ceiling for this
+    strategy -- well below both its internal ledger (Rs.1L) and real broker
+    cash (Rs.60k) alone, so the allocation cap must be the binding limit."""
+    execution, repo, _ = momentum_atr_env
+    broker = FakeBroker(
+        {}, cash=60_000,
+        holdings=[LivePosition(symbol="OTHER.NS", quantity=100, avg_price=100.0,
+                                ltp=100.0, pnl=0.0, product="CNC")],
+    )
+    effective = execution._get_effective_cash(broker, internal_cash=100_000, atr_invested_value=0.0)
+    assert effective == pytest.approx(28_000.0)
+
+
+def test_first_run_bootstraps_capital_from_real_account(momentum_atr_env, monkeypatch):
+    """First-ever run (no positions, no trade history) must replace the
+    flat deploy-time placeholder cash/peak_equity with 40% of today's real
+    combined account equity, not silently keep trading against a fictional
+    number nobody funded."""
+    execution, repo, _ = momentum_atr_env
+    closes = {"A": 100.0, "B": 200.0, "C": 50.0, "D": 10.0}
+    monkeypatch.setattr(execution, "compute_live_scores", _fake_scores(closes, ["A", "B", "C", "D"]))
+
+    broker = FakeBroker(
+        closes, cash=60_000,
+        holdings=[LivePosition(symbol="OTHER.NS", quantity=100, avg_price=100.0,
+                                ltp=100.0, pnl=0.0, product="CNC")],
+    )
+    assert repo.get_state().cash == pytest.approx(100_000.0)  # deploy-time placeholder, pre-run
+
+    execution.run_daily(broker, TODAY)
+
+    state = repo.get_state()
+    assert state.peak_equity == pytest.approx(28_000.0)  # 0.40 * (60k cash + 10k other-holding)

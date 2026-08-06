@@ -28,7 +28,7 @@ from typing import Dict, List, Optional, Tuple
 
 from broker.base import BaseBroker, OrderResult, OrderStatus
 from charges.calculator import buy_charges, sell_charges, net_pnl
-from config.settings import MOMENTUM_ATR_DD_KILL_PCT
+from config.settings import MOMENTUM_ATR_DD_KILL_PCT, MOMENTUM_ATR_CAPITAL_ALLOCATION_PCT
 from db import momentum_atr_repo as repo
 from momentum_atr.models import Position, Trade
 from momentum_atr.risk import check_kill_switch
@@ -122,14 +122,34 @@ def _buy_split(names: List[str], cash_in: float, closes: Dict[str, float]) -> Tu
     return remaining, bought
 
 
-def _get_effective_cash(broker: BaseBroker, internal_cash: float) -> float:
+def _real_total_account_equity(broker: BaseBroker) -> float:
+    """Real cash + market value of EVERY holding on the shared Upstox account
+    -- both this strategy's and the main strategy's positions together, since
+    the broker has no concept of per-strategy attribution."""
+    cash = broker.get_available_cash()
+    holdings = broker.get_holdings()
+    invested = sum(h.quantity * h.ltp for h in holdings if h.quantity > 0)
+    return cash + invested
+
+
+def _atr_invested_value(closes: Dict[str, float]) -> float:
+    """This strategy's own open-position value right now, from its own DB --
+    the slice of the shared account already counted toward its allocation."""
+    return sum(p.shares * closes.get(p.symbol, p.entry_price)
+               for p in repo.load_positions("OPEN"))
+
+
+def _get_effective_cash(broker: BaseBroker, internal_cash: float, atr_invested_value: float) -> float:
     real_cash = broker.get_available_cash()
     if internal_cash > 0 and real_cash < internal_cash * MIN_REAL_CASH_RATIO:
         send_error_alert(
             f"momentum_atr: broker cash Rs.{real_cash:,.0f} is <50% of internal ledger cash "
             f"Rs.{internal_cash:,.0f} -- possible capital collision with the other live strategy."
         )
-    return min(internal_cash, real_cash)
+    total_equity = _real_total_account_equity(broker)
+    allocation_cap = total_equity * MOMENTUM_ATR_CAPITAL_ALLOCATION_PCT
+    headroom = max(0.0, allocation_cap - atr_invested_value)
+    return min(internal_cash, real_cash, headroom)
 
 
 def _execute_buys(broker: BaseBroker, bought: Dict[str, int], reason: str,
@@ -198,6 +218,18 @@ def run_daily(broker: BaseBroker, today: _date, dry_run: bool = False) -> dict:
     state = repo.get_state()
     positions = sorted(repo.load_positions("OPEN"), key=lambda p: p.id or 0)
 
+    if not dry_run and not positions and not repo.load_trades():
+        # Never traded yet -- the state row's cash/peak_equity is still the
+        # flat deploy-time placeholder (MOMENTUM_ATR_INITIAL_CAPITAL), not
+        # real money. Bootstrap it to today's real 40%-of-total-account
+        # split before anything else runs, so the kill-switch's peak_equity
+        # baseline and this run's own cash reflect the real shared account,
+        # not a guess. Safe to do exactly once, only while fully flat --
+        # never touches state once a trade exists.
+        bootstrap_cap = _real_total_account_equity(broker) * MOMENTUM_ATR_CAPITAL_ALLOCATION_PCT
+        repo.update_state(cash=bootstrap_cap, peak_equity=bootstrap_cap)
+        state = repo.get_state()
+
     scores, closes = compute_live_scores(get_all_symbols())
     if len(closes) < 20:
         send_error_alert(f"momentum_atr: only {len(closes)} symbols scored today (need a real universe) -- aborting run")
@@ -216,7 +248,7 @@ def run_daily(broker: BaseBroker, today: _date, dry_run: bool = False) -> dict:
         if len(names) < PORTFOLIO_SIZE or tripped:
             summary["actions"].append({"type": "SKIP_INITIAL", "reason": "kill_switch" if tripped else "insufficient_ranked_symbols"})
         else:
-            effective_cash = _get_effective_cash(broker, cash) if not dry_run else cash
+            effective_cash = _get_effective_cash(broker, cash, 0.0) if not dry_run else cash
             remaining, bought = _buy_split(names, effective_cash, closes)
             spent = _execute_buys(broker, bought, "INITIAL_TOPN_SPLIT", closes, dry_run, plan)
             cash = cash - spent if not dry_run else cash
@@ -249,7 +281,8 @@ def run_daily(broker: BaseBroker, today: _date, dry_run: bool = False) -> dict:
                 summary["actions"].append({"type": "SWAP_SELL", "symbol": swap_loser})
                 if not tripped:
                     price = closes.get(swap_winner)
-                    effective_cash = _get_effective_cash(broker, cash) if not dry_run else cash
+                    invested_now = _atr_invested_value(closes) if not dry_run else 0.0
+                    effective_cash = _get_effective_cash(broker, cash, invested_now) if not dry_run else cash
                     if price and price > 0:
                         n = int(min(cash, effective_cash) // price)
                         if n > 0:
@@ -267,7 +300,8 @@ def run_daily(broker: BaseBroker, today: _date, dry_run: bool = False) -> dict:
                 summary["actions"].append({"type": "RANK_EXIT_SELL", "symbol": rank_exit_sym})
                 if not tripped:
                     names = ranked[:PORTFOLIO_SIZE]
-                    effective_cash = _get_effective_cash(broker, cash) if not dry_run else cash
+                    invested_now = _atr_invested_value(closes) if not dry_run else 0.0
+                    effective_cash = _get_effective_cash(broker, cash, invested_now) if not dry_run else cash
                     remaining, bought = _buy_split(names, min(cash, effective_cash), closes)
                     if bought:
                         spent = _execute_buys(broker, bought, "RANK_EXIT_REALLOC_TOPN", closes, dry_run, plan)

@@ -277,6 +277,14 @@ RESEARCH_DB_PATH        = os.getenv("RESEARCH_DB_PATH_OVERRIDE", "db/research.db
 MOMENTUM_ATR_DB_PATH         = os.getenv("MOMENTUM_ATR_DB_PATH_OVERRIDE", "db/momentum_atr.db")
 MOMENTUM_ATR_INITIAL_CAPITAL = float(os.getenv("MOMENTUM_ATR_INITIAL_CAPITAL", 100000))
 MOMENTUM_ATR_DD_KILL_PCT     = float(os.getenv("MOMENTUM_ATR_DD_KILL_PCT", 0.25))
+# Real broker cash is one shared pool with the main strategy above (same
+# Upstox account) -- there is no segregated 1L sitting anywhere. This caps
+# what momentum_atr may ever deploy to MOMENTUM_ATR_CAPITAL_ALLOCATION_PCT
+# of TODAY's real combined account equity (cash + market value of every
+# holding on the account, both strategies' positions together), leaving the
+# rest for the main strategy. Recomputed fresh each run in execution.py, not
+# a fixed number -- see momentum_atr/execution.py:_get_effective_cash.
+MOMENTUM_ATR_CAPITAL_ALLOCATION_PCT = float(os.getenv("MOMENTUM_ATR_CAPITAL_ALLOCATION_PCT", 0.40))
 
 # ──────────────────────────────────────────────
 # BACKTEST ACCEPTANCE CRITERIA
