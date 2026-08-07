@@ -71,6 +71,9 @@ def main() -> int:
         logger.info("[momentum_atr] ranking for %s already computed -- skipping.", today)
         return 0
 
+    from data.fetcher import get_and_reset_stall_count
+    get_and_reset_stall_count()  # clear any count left over from a prior run/import
+
     try:
         from data.universe import get_all_symbols
         from momentum_atr.scoring import compute_live_scores, rank_symbols
@@ -78,8 +81,13 @@ def main() -> int:
         symbols = get_all_symbols()
         logger.info("[momentum_atr] scoring %d universe symbols...", len(symbols))
         scores, closes = compute_live_scores(symbols)
+        stalls = get_and_reset_stall_count()
+        if stalls:
+            logger.warning("[momentum_atr] %d symbol(s) hit the 45s fetch stall this run", stalls)
         if len(closes) < 20:
-            _alert_abort(today, f"only {len(closes)} symbols scored (need a real universe)")
+            detail = f"only {len(closes)} symbols scored (need a real universe), {stalls} stalls"
+            repo.record_sla_checkpoint(today, "PRECOMPUTE", "ABORTED", detail)
+            _alert_abort(today, detail)
             logger.error("[momentum_atr] only %d symbols scored -- aborting", len(closes))
             return 1
 
@@ -89,8 +97,13 @@ def main() -> int:
             "[momentum_atr] precompute complete: %d scored, top-5 ranked: %s",
             len(closes), ranked[:5],
         )
+        repo.record_sla_checkpoint(
+            today, "PRECOMPUTE", "OK",
+            f"{len(closes)} scored, {stalls} stalls",
+        )
     except Exception as e:
         logger.exception("[momentum_atr] precompute crashed")
+        repo.record_sla_checkpoint(today, "PRECOMPUTE", "CRASHED", str(e))
         _alert_abort(today, f"Unhandled exception: {e}")
         return 1
 

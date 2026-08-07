@@ -130,6 +130,8 @@ def main() -> int:
         logger.info("[momentum_atr] Connected to Upstox")
     except Exception as e:
         logger.error("[momentum_atr] Upstox broker init failed: %s", e)
+        if args.live:
+            repo.record_sla_checkpoint(today, "EXECUTION", "CRASHED", f"broker init: {e}")
         _alert_abort(today, f"Upstox broker init failed: {e}")
         return 1
 
@@ -138,14 +140,20 @@ def main() -> int:
         summary = run_daily(broker, today, dry_run=args.dry_run)
     except Exception as e:
         logger.exception("[momentum_atr] run_daily crashed")
+        if args.live:
+            repo.record_sla_checkpoint(today, "EXECUTION", "CRASHED", str(e))
         _alert_abort(today, f"Unhandled exception: {e}")
         return 1
 
     if summary.get("aborted"):
         logger.error("[momentum_atr] run aborted: %s", summary)
+        if args.live:
+            repo.record_sla_checkpoint(today, "EXECUTION", "ABORTED", str(summary.get("reason", "")))
         return 1
 
     logger.info("[momentum_atr] run complete: %s", summary)
+    if args.live:
+        repo.record_sla_checkpoint(today, "EXECUTION", "OK", f"equity={summary.get('total_equity', 0):.0f}")
     _send_summary_alert(today, args.dry_run, summary)
     return 0
 

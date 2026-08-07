@@ -169,3 +169,15 @@ def fetch_all(symbols: List[str], lookback_days: int = LOOKBACK_DAYS, start: Opt
 def fetch_index(symbol: str = "Nifty 50", lookback_days: int = 250, start: Optional[date] = None, end: Optional[date] = None, interval: str = "day", live_mode: bool = False) -> pd.DataFrame:
     """Fetch index data strictly from Upstox."""
     return fetch_symbol(symbol, lookback_days, start, end, interval=interval, live_mode=live_mode)
+
+
+def get_and_reset_stall_count() -> int:
+    """Number of UpstoxDataProvider hard-deadline stalls (45s, see
+    data/providers/upstox_provider.py) since the last call to this
+    function. A stalled fetch degrades gracefully (that symbol's newest
+    bar is simply missing from this run, not fatal) but costs real wall
+    time -- callers that care about a per-run count (precompute cron,
+    daily runner) should call this once at the end of their run and
+    surface it, rather than requiring someone to grep logs to notice the
+    count creeping up."""
+    return _upstox_provider.get_and_reset_stall_count() if _upstox_provider else 0

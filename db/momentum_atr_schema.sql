@@ -68,3 +68,23 @@ CREATE TABLE IF NOT EXISTS daily_ranking (
     scored_count    INTEGER NOT NULL,
     computed_at     TEXT    NOT NULL
 );
+
+-- Per-pipeline-stage completion record, written by
+-- precompute_momentum_atr_ranking.py (step='PRECOMPUTE') and
+-- run_momentum_atr_live.py (step='EXECUTION') at the end of every attempt
+-- (success, abort, or crash -- not just success). scripts/
+-- momentum_atr_sla_check.py reads this once at EOD and reports RED if
+-- either step is missing or not OK for a trading day -- catches "the cron
+-- never fired at all" (flock deadlock, crash before any code runs), which
+-- a plain log-exists check can miss if something else writes to the same
+-- log file. UNIQUE(date, step) so a same-day rerun overwrites cleanly,
+-- matching daily_ranking/equity_snapshots' idempotency pattern.
+CREATE TABLE IF NOT EXISTS sla_checkpoints (
+    id              INTEGER PRIMARY KEY AUTOINCREMENT,
+    date            DATE    NOT NULL,
+    step            TEXT    NOT NULL,
+    status          TEXT    NOT NULL,
+    detail          TEXT,
+    ts              TEXT    NOT NULL,
+    UNIQUE(date, step)
+);

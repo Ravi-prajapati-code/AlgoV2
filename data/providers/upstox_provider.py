@@ -28,6 +28,12 @@ class UpstoxDataProvider:
             "Authorization": f"Bearer {access_token}",
             "Accept": "application/json"
         }
+        # Count of hard-deadline stalls this instance has hit -- read via
+        # get_and_reset_stall_count(). No lock needed: fetch_historical is
+        # only ever called sequentially from a single thread per instance
+        # (the deadline-enforcement thread it spawns is joined before
+        # returning), so there's never a concurrent writer.
+        self.stall_count = 0
         # Institutional retry logic
         self.session = requests.Session()
         retries = Retry(
@@ -78,6 +84,7 @@ class UpstoxDataProvider:
             req_thread.join(timeout=self._HARD_DEADLINE)
 
             if req_thread.is_alive():
+                self.stall_count += 1
                 logger.error(
                     f"[UpstoxData] Hard deadline ({self._HARD_DEADLINE}s) exceeded fetching "
                     f"{instrument_key} — abandoning stalled connection, continuing"
@@ -114,3 +121,11 @@ class UpstoxDataProvider:
         except Exception as e:
             logger.error(f"[UpstoxData] Failed to fetch {instrument_key}: {e}")
             return pd.DataFrame()
+
+    def get_and_reset_stall_count(self) -> int:
+        """Read-and-clear the hard-deadline-stall counter -- callers that
+        want a per-run figure (not a lifetime total across a long-lived
+        singleton) should call this once, at the end of their run."""
+        n = self.stall_count
+        self.stall_count = 0
+        return n

@@ -235,3 +235,35 @@ def load_daily_ranking(d: date) -> Optional[Tuple[List[str], Dict[str, float]]]:
     if not row:
         return None
     return json.loads(row["ranked_json"]), json.loads(row["closes_json"])
+
+
+# ── SLA CHECKPOINTS (pipeline-stage watchdog) ────────────────────────────
+
+def record_sla_checkpoint(d: date, step: str, status: str, detail: str = "") -> None:
+    """Written by precompute_momentum_atr_ranking.py (step='PRECOMPUTE') and
+    run_momentum_atr_live.py (step='EXECUTION') at the end of every attempt
+    -- success, abort, AND crash, not just the happy path -- so
+    momentum_atr_sla_check.py can tell "ran and failed" apart from "never
+    ran at all" (the flock-deadlock/silent-outage failure class this repo
+    has already hit once on the main strategy)."""
+    conn = get_connection()
+    conn.execute(
+        """INSERT OR REPLACE INTO sla_checkpoints (date, step, status, detail, ts)
+           VALUES (?, ?, ?, ?, ?)""",
+        (d.strftime("%Y-%m-%d"), step, status, detail, datetime.utcnow().isoformat())
+    )
+    conn.commit()
+    conn.close()
+
+
+def load_sla_checkpoints(d: date) -> Dict[str, dict]:
+    """Returns {step: {status, detail, ts}} for every checkpoint recorded on
+    `d`. A step key simply absent from the result means that stage never
+    reported in at all today -- the case a plain log-exists check can miss."""
+    conn = get_connection()
+    rows = conn.execute(
+        "SELECT step, status, detail, ts FROM sla_checkpoints WHERE date = ?",
+        (d.strftime("%Y-%m-%d"),)
+    ).fetchall()
+    conn.close()
+    return {r["step"]: {"status": r["status"], "detail": r["detail"], "ts": r["ts"]} for r in rows}
