@@ -452,6 +452,34 @@ class UpstoxBroker(BaseBroker):
             logger.error("[Upstox] get_available_cash() failed: %s", e)
             return 0.0
 
+    def get_ltp(self, symbol: str) -> float:
+        """Real-time last-traded-price via Upstox v2 /market-quote/ltp.
+        Used by momentum_atr's sizing math so the price used to compute
+        share counts matches (closely) the price the MARKET order actually
+        fills at -- the 2026-08-07 incident sized against a prior-day
+        close and overspent its own budget when the real fill landed
+        higher. Returns 0.0 on any failure; caller must fall back."""
+        instrument_key = self._resolve_instrument(symbol)
+        if not instrument_key:
+            return 0.0
+        try:
+            resp = self._session.get(
+                f"{self._base_url}/market-quote/ltp",
+                headers=self._headers,
+                params={"instrument_key": instrument_key},
+                timeout=10,
+            )
+            resp.raise_for_status()
+            data = resp.json().get("data", {})
+            for entry in data.values():
+                price = entry.get("last_price")
+                if price:
+                    return float(price)
+            return 0.0
+        except Exception as e:
+            logger.error("[Upstox] get_ltp(%s) failed: %s", symbol, e)
+            return 0.0
+
     # ── Instrument key resolution ──────────────────────────────────────────
 
     def _resolve_instrument(self, symbol: str) -> Optional[str]:

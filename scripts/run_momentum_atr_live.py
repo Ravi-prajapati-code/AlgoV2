@@ -8,6 +8,16 @@ pre-market (~9:17 IST):
     -c "timeout 900 .venv/bin/python scripts/run_momentum_atr_live.py --live" \
     >> logs/momentum_atr_run.log 2>&1
 
+Execution-only -- does no scoring itself. Reads the day's ranking from
+db/momentum_atr.db (table daily_ranking), written earlier the same
+morning by scripts/precompute_momentum_atr_ranking.py's own cron
+(~08:00 IST, see that script's docstring). Split out after the
+2026-08-07 first live run: scoring the ~509-symbol universe took ~10min
+on a cold cache, so order placement didn't start right at 9:17. If
+today's ranking is missing (precompute failed or hasn't run), this
+aborts with a Telegram alert rather than falling back to a live compute
+that could blow this cron's own 900s budget.
+
 flock/timeout are applied at the cron-line level (matching
 runner/daily_runner.py's own convention) -- this script does no locking
 itself. Own lock file, never /tmp/algov2_runner.lock (docs/56's

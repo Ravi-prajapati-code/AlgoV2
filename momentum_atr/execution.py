@@ -32,7 +32,6 @@ from config.settings import MOMENTUM_ATR_DD_KILL_PCT, MOMENTUM_ATR_CAPITAL_ALLOC
 from db import momentum_atr_repo as repo
 from momentum_atr.models import Position, Trade
 from momentum_atr.risk import check_kill_switch
-from momentum_atr.scoring import compute_live_scores, rank_symbols
 from notifications.telegram import send_error_alert, send_message
 
 PORTFOLIO_SIZE = 3
@@ -41,6 +40,16 @@ SWAP_GAIN_PCT = 3.0
 AWAIT_TIMEOUT_SEC = 30
 AWAIT_POLL_SEC = 2
 MIN_REAL_CASH_RATIO = 0.5  # alert if broker cash < 50% of internal ledger cash
+SIZING_SAFETY_MARGIN_PCT = 0.005  # reserve 0.5% of budget as a slippage cushion
+# charges/calculator.py's buy_charges() is added ON TOP of trade value at
+# fill time and was NOT reserved in the sizing budget -- a second, separate
+# way the 2026-08-07 incident's budget got exceeded (live-quote sizing fixes
+# the price gap, not this). Worst case is an uncapped brokerage leg (trade
+# value < Rs.1200, so the min(2.5%, Rs.30) cap doesn't bind yet):
+# brokerage 2.5% + STT 0.1% + GST-on-brokerage ~0.45% + exchange/SEBI/stamp
+# ~0.02% = ~3.07%. Above that trade size the Rs.30 cap makes the true rate
+# fall, so this flat rate is conservative (over-reserves) at every size.
+MAX_BUY_CHARGE_RATE = 0.032  # reserve ~3.2% of budget for buy-side charges
 
 
 def _await_order_completion(broker: BaseBroker, order_id: str) -> Optional[OrderResult]:
@@ -120,6 +129,26 @@ def _buy_split(names: List[str], cash_in: float, closes: Dict[str, float]) -> Tu
     for sym, n in extra.items():
         bought[sym] = bought.get(sym, 0) + n
     return remaining, bought
+
+
+def _live_prices(broker: BaseBroker, symbols: List[str], fallback: Dict[str, float]) -> Dict[str, float]:
+    """Real-time price for a small candidate/position set (never the full
+    universe -- at most PORTFOLIO_SIZE symbols) via broker.get_ltp().
+    2026-08-07 incident: sizing used compute_live_scores()'s prior-day
+    close (correct for ranking, stale for money math) while real MARKET
+    orders filled at today's price -- the gap between the two silently
+    overspent the strategy's own budget and drove the ledger negative.
+    Falls back to `fallback` (the precomputed close) per-symbol on any
+    lookup failure so a live-quote outage degrades to the old behavior
+    rather than crashing the run."""
+    prices: Dict[str, float] = {}
+    for sym in symbols:
+        try:
+            ltp = broker.get_ltp(sym)
+        except Exception:
+            ltp = 0.0
+        prices[sym] = ltp if ltp and ltp > 0 else fallback.get(sym, 0.0)
+    return prices
 
 
 def _real_total_account_equity(broker: BaseBroker) -> float:
@@ -212,8 +241,6 @@ def _execute_sell(broker: BaseBroker, pos: Position, reason: str, closes: Dict[s
 
 def run_daily(broker: BaseBroker, today: _date, dry_run: bool = False) -> dict:
     """One cron invocation. Returns a summary dict for logging/Telegram."""
-    from data.universe import get_all_symbols
-
     plan: list = []
     state = repo.get_state()
     positions = sorted(repo.load_positions("OPEN"), key=lambda p: p.id or 0)
@@ -230,12 +257,18 @@ def run_daily(broker: BaseBroker, today: _date, dry_run: bool = False) -> dict:
         repo.update_state(cash=bootstrap_cap, peak_equity=bootstrap_cap)
         state = repo.get_state()
 
-    scores, closes = compute_live_scores(get_all_symbols())
+    loaded = repo.load_daily_ranking(today)
+    if loaded is None:
+        send_error_alert(
+            f"momentum_atr: no precomputed ranking found for {today} -- "
+            "the precompute cron may have failed or not run yet -- aborting run"
+        )
+        return {"aborted": True, "reason": "no_precomputed_ranking"}
+    ranked, closes = loaded
     if len(closes) < 20:
         send_error_alert(f"momentum_atr: only {len(closes)} symbols scored today (need a real universe) -- aborting run")
         return {"aborted": True, "reason": "insufficient_universe_coverage", "scored": len(closes)}
 
-    ranked = rank_symbols(scores)
     rank_of = {sym: i + 1 for i, sym in enumerate(ranked)}
 
     tripped = check_kill_switch(today, state.cash, positions, closes)
@@ -249,8 +282,10 @@ def run_daily(broker: BaseBroker, today: _date, dry_run: bool = False) -> dict:
             summary["actions"].append({"type": "SKIP_INITIAL", "reason": "kill_switch" if tripped else "insufficient_ranked_symbols"})
         else:
             effective_cash = _get_effective_cash(broker, cash, 0.0) if not dry_run else cash
-            remaining, bought = _buy_split(names, effective_cash, closes)
-            spent = _execute_buys(broker, bought, "INITIAL_TOPN_SPLIT", closes, dry_run, plan)
+            sizing_prices = _live_prices(broker, names, closes)
+            budget = effective_cash * (1 - SIZING_SAFETY_MARGIN_PCT - MAX_BUY_CHARGE_RATE)
+            remaining, bought = _buy_split(names, budget, sizing_prices)
+            spent = _execute_buys(broker, bought, "INITIAL_TOPN_SPLIT", sizing_prices, dry_run, plan)
             cash = cash - spent if not dry_run else cash
             summary["actions"].append({"type": "INITIAL_TOPN_SPLIT", "bought": bought})
     else:
@@ -280,13 +315,15 @@ def run_daily(broker: BaseBroker, today: _date, dry_run: bool = False) -> dict:
                 cash += proceeds
                 summary["actions"].append({"type": "SWAP_SELL", "symbol": swap_loser})
                 if not tripped:
-                    price = closes.get(swap_winner)
                     invested_now = _atr_invested_value(closes) if not dry_run else 0.0
                     effective_cash = _get_effective_cash(broker, cash, invested_now) if not dry_run else cash
+                    sizing_prices = _live_prices(broker, [swap_winner], closes)
+                    price = sizing_prices.get(swap_winner)
                     if price and price > 0:
-                        n = int(min(cash, effective_cash) // price)
+                        budget = min(cash, effective_cash) * (1 - SIZING_SAFETY_MARGIN_PCT - MAX_BUY_CHARGE_RATE)
+                        n = int(budget // price)
                         if n > 0:
-                            spent = _execute_buys(broker, {swap_winner: n}, "TAKE_PROFIT_+3%_SWAP", closes, dry_run, plan)
+                            spent = _execute_buys(broker, {swap_winner: n}, "TAKE_PROFIT_+3%_SWAP", sizing_prices, dry_run, plan)
                             cash = cash - spent if not dry_run else cash
                             summary["actions"].append({"type": "SWAP_BUY", "symbol": swap_winner, "qty": n})
                 else:
@@ -302,9 +339,11 @@ def run_daily(broker: BaseBroker, today: _date, dry_run: bool = False) -> dict:
                     names = ranked[:PORTFOLIO_SIZE]
                     invested_now = _atr_invested_value(closes) if not dry_run else 0.0
                     effective_cash = _get_effective_cash(broker, cash, invested_now) if not dry_run else cash
-                    remaining, bought = _buy_split(names, min(cash, effective_cash), closes)
+                    sizing_prices = _live_prices(broker, names, closes)
+                    budget = min(cash, effective_cash) * (1 - SIZING_SAFETY_MARGIN_PCT - MAX_BUY_CHARGE_RATE)
+                    remaining, bought = _buy_split(names, budget, sizing_prices)
                     if bought:
-                        spent = _execute_buys(broker, bought, "RANK_EXIT_REALLOC_TOPN", closes, dry_run, plan)
+                        spent = _execute_buys(broker, bought, "RANK_EXIT_REALLOC_TOPN", sizing_prices, dry_run, plan)
                         cash = cash - spent if not dry_run else cash
                         summary["actions"].append({"type": "RANK_EXIT_REALLOC", "bought": bought})
                 else:
@@ -316,7 +355,8 @@ def run_daily(broker: BaseBroker, today: _date, dry_run: bool = False) -> dict:
 
     repo.update_state(cash=cash)
     final_positions = repo.load_positions("OPEN")
-    invested = sum(p.shares * closes.get(p.symbol, p.entry_price) for p in final_positions)
+    mark_prices = _live_prices(broker, [p.symbol for p in final_positions], closes)
+    invested = sum(p.shares * mark_prices.get(p.symbol, p.entry_price) for p in final_positions)
     total_equity = cash + invested
     new_state = repo.get_state()
     drawdown = (new_state.peak_equity - total_equity) / new_state.peak_equity if new_state.peak_equity > 0 else 0.0

@@ -149,6 +149,14 @@ class BaseBroker(ABC):
         """Return available cash balance for trading."""
         ...
 
+    def get_ltp(self, symbol: str) -> float:
+        """Real-time last-traded-price for one symbol, used to size an
+        order against the current price instead of a stale prior-close.
+        Default 0.0 means "unavailable" -- callers must treat 0.0 as a
+        signal to fall back to a stale price, never as a real quote. Only
+        brokers with a live quote endpoint (UpstoxBroker) override this."""
+        return 0.0
+
     # ── Retry wrapper ──────────────────────────────────────────────────────
 
     def find_recent_order_by_tag(self, tag: str) -> Optional[OrderResult]:

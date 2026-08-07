@@ -6,10 +6,11 @@ get_connection()/init_db() convention and db/research_repo.py's
 physical-isolation precedent.
 """
 
+import json
 import os
 import sqlite3
-from datetime import date
-from typing import List, Optional
+from datetime import date, datetime
+from typing import Dict, List, Optional, Tuple
 
 import pandas as pd
 
@@ -199,3 +200,38 @@ def load_equity_snapshots(limit: int = 500) -> List[EquitySnapshot]:
             kill_switch_tripped=bool(r["kill_switch_tripped"]), id=r["id"]
         ))
     return snaps
+
+
+# ── DAILY RANKING (precompute/execution split) ──────────────────────────
+
+def save_daily_ranking(d: date, ranked: List[str], closes: Dict[str, float]):
+    """Written once per morning by the precompute cron -- the slow,
+    universe-wide scoring pass -- so the 9:17 execution cron only reads
+    (fast) instead of recomputing (slow, cache-bound, was blowing past
+    9:17 by ~10min on cold cache)."""
+    conn = get_connection()
+    conn.execute(
+        """INSERT OR REPLACE INTO daily_ranking
+           (date, ranked_json, closes_json, scored_count, computed_at)
+           VALUES (?, ?, ?, ?, ?)""",
+        (d.strftime("%Y-%m-%d"), json.dumps(ranked), json.dumps(closes),
+         len(closes), datetime.utcnow().isoformat())
+    )
+    conn.commit()
+    conn.close()
+
+
+def load_daily_ranking(d: date) -> Optional[Tuple[List[str], Dict[str, float]]]:
+    """Returns (ranked, closes) for `d`, or None if the precompute cron
+    hasn't run yet for that date -- caller must abort, not fall back to a
+    live compute (defeats the point of the split and risks the same
+    cron-timeout the split exists to avoid)."""
+    conn = get_connection()
+    row = conn.execute(
+        "SELECT ranked_json, closes_json FROM daily_ranking WHERE date = ?",
+        (d.strftime("%Y-%m-%d"),)
+    ).fetchone()
+    conn.close()
+    if not row:
+        return None
+    return json.loads(row["ranked_json"]), json.loads(row["closes_json"])

@@ -53,3 +53,18 @@ CREATE TABLE IF NOT EXISTS state (
     kill_switch_tripped         INTEGER NOT NULL DEFAULT 0,
     kill_switch_tripped_date    DATE
 );
+
+-- Written once per morning by scripts/precompute_momentum_atr_ranking.py
+-- (runs early, before market open -- the slow, universe-wide scoring
+-- pass). Read once per morning by scripts/run_momentum_atr_live.py at
+-- 9:17 IST, which does no scoring itself -- only order placement against
+-- the ranking already sitting here. date UNIQUE doubles as same-day
+-- idempotency, matching equity_snapshots' pattern.
+CREATE TABLE IF NOT EXISTS daily_ranking (
+    id              INTEGER PRIMARY KEY AUTOINCREMENT,
+    date            DATE    NOT NULL UNIQUE,
+    ranked_json     TEXT    NOT NULL,
+    closes_json     TEXT    NOT NULL,
+    scored_count    INTEGER NOT NULL,
+    computed_at     TEXT    NOT NULL
+);

@@ -153,6 +153,13 @@ class FakeBroker(BaseBroker):
     def get_holdings(self):
         return self.holdings
 
+    def get_ltp(self, symbol):
+        """Same price map as fills -- in these tests there is no gap
+        between "price used to size" and "price the order actually fills
+        at" to model; test_sizing_uses_live_quote_not_stale_close below is
+        the one test that deliberately makes them differ."""
+        return self.prices.get(symbol, 0.0)
+
 
 TODAY = date(2026, 8, 6)
 # len(closes) must clear run_daily's >=20-scored-symbols universe-coverage
@@ -161,11 +168,13 @@ TODAY = date(2026, 8, 6)
 FILLER = {f"F{i}": 50.0 for i in range(25)}
 
 
-def _fake_scores(closes, ranked):
+def _seed_ranking(repo, closes, ranked):
+    """Seeds db/momentum_atr.db's daily_ranking table directly -- what
+    scripts/precompute_momentum_atr_ranking.py would have written earlier
+    that morning. run_daily() no longer scores/ranks itself (moved to the
+    precompute cron), it only reads this."""
     all_closes = {**closes, **FILLER}
-    scores = {sym: (len(ranked) - i) * 10.0 for i, sym in enumerate(ranked)}
-    scores.update({sym: -1.0 - i for i, sym in enumerate(FILLER)})
-    return lambda symbols: (scores, all_closes)
+    repo.save_daily_ranking(TODAY, ranked, all_closes)
 
 
 @pytest.fixture
@@ -194,10 +203,10 @@ def _seed_positions(repo, symbols, entry_price=100.0):
                                      entry_price=entry_price, shares=10, status="OPEN"))
 
 
-def test_initial_fill_establishes_top_n(momentum_atr_env, monkeypatch):
+def test_initial_fill_establishes_top_n(momentum_atr_env):
     execution, repo, _ = momentum_atr_env
     closes = {"A": 100.0, "B": 200.0, "C": 50.0, "D": 10.0}
-    monkeypatch.setattr(execution, "compute_live_scores", _fake_scores(closes, ["A", "B", "C", "D"]))
+    _seed_ranking(repo, closes, ["A", "B", "C", "D"])
 
     summary = execution.run_daily(FakeBroker(closes), TODAY)
 
@@ -206,10 +215,10 @@ def test_initial_fill_establishes_top_n(momentum_atr_env, monkeypatch):
     assert summary["open_positions"] == 3
 
 
-def test_dry_run_makes_no_ledger_mutation(momentum_atr_env, monkeypatch):
+def test_dry_run_makes_no_ledger_mutation(momentum_atr_env):
     execution, repo, _ = momentum_atr_env
     closes = {"A": 100.0, "B": 200.0, "C": 50.0, "D": 10.0}
-    monkeypatch.setattr(execution, "compute_live_scores", _fake_scores(closes, ["A", "B", "C", "D"]))
+    _seed_ranking(repo, closes, ["A", "B", "C", "D"])
 
     summary = execution.run_daily(FakeBroker(closes), TODAY, dry_run=True)
 
@@ -217,13 +226,13 @@ def test_dry_run_makes_no_ledger_mutation(momentum_atr_env, monkeypatch):
     assert len(summary["planned_orders"]) == 3
 
 
-def test_swap_rule_sells_loser_buys_winner(momentum_atr_env, monkeypatch):
+def test_swap_rule_sells_loser_buys_winner(momentum_atr_env):
     execution, repo, _ = momentum_atr_env
     _seed_positions(repo, ["A", "B", "C"])
     repo.update_state(cash=100.0, peak_equity=3200.0)  # ~= entry equity, well clear of kill-switch
 
     today_closes = {"A": 96.0, "B": 104.0, "C": 101.0, "D": 90.0}  # A -4%, B +4%
-    monkeypatch.setattr(execution, "compute_live_scores", _fake_scores(today_closes, ["B", "C", "A", "D"]))
+    _seed_ranking(repo, today_closes, ["B", "C", "A", "D"])
 
     summary = execution.run_daily(FakeBroker(today_closes), TODAY)
 
@@ -233,7 +242,7 @@ def test_swap_rule_sells_loser_buys_winner(momentum_atr_env, monkeypatch):
     assert "SWAP_SELL" in types and "SWAP_BUY" in types
 
 
-def test_rank_exit_sells_first_out_of_rank_and_reallocs(momentum_atr_env, monkeypatch):
+def test_rank_exit_sells_first_out_of_rank_and_reallocs(momentum_atr_env):
     execution, repo, _ = momentum_atr_env
     _seed_positions(repo, ["A", "B", "C"])
     repo.update_state(cash=100.0, peak_equity=3200.0)
@@ -241,8 +250,7 @@ def test_rank_exit_sells_first_out_of_rank_and_reallocs(momentum_atr_env, monkey
     today_closes = {"A": 100.5, "B": 100.5, "C": 100.5, "D": 100.5, "E": 100.5}
     # A, B stay top-3; D displaces C to rank 4 -- C is the sole held
     # position with rank>3, matching engine.py's break-on-first-exit.
-    monkeypatch.setattr(execution, "compute_live_scores",
-                         _fake_scores(today_closes, ["A", "B", "D", "E", "C"]))
+    _seed_ranking(repo, today_closes, ["A", "B", "D", "E", "C"])
 
     summary = execution.run_daily(FakeBroker(today_closes), TODAY)
 
@@ -252,14 +260,14 @@ def test_rank_exit_sells_first_out_of_rank_and_reallocs(momentum_atr_env, monkey
     assert "RANK_EXIT_SELL" in types and "RANK_EXIT_REALLOC" in types
 
 
-def test_kill_switch_blocks_buys_but_not_sells(momentum_atr_env, monkeypatch):
+def test_kill_switch_blocks_buys_but_not_sells(momentum_atr_env):
     execution, repo, sent = momentum_atr_env
     _seed_positions(repo, ["A", "B", "C"])
     # peak_equity far above today's equity -> forces a >=25% drawdown trip
     repo.update_state(cash=0.0, peak_equity=10_000.0)
 
     today_closes = {"A": 96.0, "B": 104.0, "C": 101.0, "D": 90.0}
-    monkeypatch.setattr(execution, "compute_live_scores", _fake_scores(today_closes, ["B", "C", "A", "D"]))
+    _seed_ranking(repo, today_closes, ["B", "C", "A", "D"])
 
     summary = execution.run_daily(FakeBroker(today_closes), TODAY)
 
@@ -271,10 +279,10 @@ def test_kill_switch_blocks_buys_but_not_sells(momentum_atr_env, monkeypatch):
     assert any("TRIPPED" in msg for _, msg in sent)
 
 
-def test_rejected_order_leaves_ledger_untouched(momentum_atr_env, monkeypatch):
+def test_rejected_order_leaves_ledger_untouched(momentum_atr_env):
     execution, repo, _ = momentum_atr_env
     closes = {"A": 100.0, "B": 200.0, "C": 50.0, "D": 10.0}
-    monkeypatch.setattr(execution, "compute_live_scores", _fake_scores(closes, ["A", "B", "C", "D"]))
+    _seed_ranking(repo, closes, ["A", "B", "C", "D"])
 
     broker = FakeBroker(closes)
     broker.force_reject.add("A")
@@ -285,10 +293,10 @@ def test_rejected_order_leaves_ledger_untouched(momentum_atr_env, monkeypatch):
     assert {"B", "C"} <= symbols
 
 
-def test_partial_fill_leaves_ledger_untouched(momentum_atr_env, monkeypatch):
+def test_partial_fill_leaves_ledger_untouched(momentum_atr_env):
     execution, repo, _ = momentum_atr_env
     closes = {"A": 100.0, "B": 200.0, "C": 50.0, "D": 10.0}
-    monkeypatch.setattr(execution, "compute_live_scores", _fake_scores(closes, ["A", "B", "C", "D"]))
+    _seed_ranking(repo, closes, ["A", "B", "C", "D"])
 
     broker = FakeBroker(closes)
     broker.force_partial["A"] = 1  # confirmed-fill funnel requires filled_qty == requested qty
@@ -312,14 +320,14 @@ def test_allocation_cap_limits_effective_cash(momentum_atr_env):
     assert effective == pytest.approx(28_000.0)
 
 
-def test_first_run_bootstraps_capital_from_real_account(momentum_atr_env, monkeypatch):
+def test_first_run_bootstraps_capital_from_real_account(momentum_atr_env):
     """First-ever run (no positions, no trade history) must replace the
     flat deploy-time placeholder cash/peak_equity with 40% of today's real
     combined account equity, not silently keep trading against a fictional
     number nobody funded."""
     execution, repo, _ = momentum_atr_env
     closes = {"A": 100.0, "B": 200.0, "C": 50.0, "D": 10.0}
-    monkeypatch.setattr(execution, "compute_live_scores", _fake_scores(closes, ["A", "B", "C", "D"]))
+    _seed_ranking(repo, closes, ["A", "B", "C", "D"])
 
     broker = FakeBroker(
         closes, cash=60_000,
@@ -332,3 +340,41 @@ def test_first_run_bootstraps_capital_from_real_account(momentum_atr_env, monkey
 
     state = repo.get_state()
     assert state.peak_equity == pytest.approx(28_000.0)  # 0.40 * (60k cash + 10k other-holding)
+
+
+def test_run_daily_aborts_when_no_precomputed_ranking(momentum_atr_env):
+    """No daily_ranking row for today means precompute cron didn't run/failed.
+    run_daily must abort loud, not fall back to scoring itself live (defeats
+    the point of the precompute/execute split and risks the same cron-timeout
+    the split exists to avoid)."""
+    execution, repo, sent = momentum_atr_env
+    broker = FakeBroker({})
+
+    summary = execution.run_daily(broker, TODAY)
+
+    assert summary["aborted"] is True
+    assert summary["reason"] == "no_precomputed_ranking"
+
+
+def test_sizing_uses_live_quote_not_stale_close(momentum_atr_env):
+    """Root cause of the 2026-08-07 negative-cash incident: _buy_split sized
+    shares against precompute's stale prior-close price while real MARKET
+    fills happened at today's (higher) live price, silently overspending the
+    strategy's own budget. Sizing must use broker.get_ltp (live) so the two
+    prices used for "how many shares" and "what did we pay" match -- doesn't
+    need to be perfect, just not off by a full-day's gap."""
+    execution, repo, _ = momentum_atr_env
+    stale_closes = {"A": 100.0, "B": 100.0, "C": 100.0}
+    ranked = ["A", "B", "C"]
+    _seed_ranking(repo, stale_closes, ranked)
+
+    live_price = 110.0  # 10% above the stale precompute close
+    broker = FakeBroker({s: live_price for s in ranked}, cash=10_000)
+
+    summary = execution.run_daily(broker, TODAY)
+
+    assert not summary.get("aborted"), summary
+    assert summary["cash"] >= 0, (
+        "sizing against the stale precompute close instead of broker.get_ltp() "
+        f"drove the ledger negative: {summary}"
+    )
