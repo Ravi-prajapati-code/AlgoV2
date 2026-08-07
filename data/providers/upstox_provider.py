@@ -34,15 +34,22 @@ class UpstoxDataProvider:
         # (the deadline-enforcement thread it spawns is joined before
         # returning), so there's never a concurrent writer.
         self.stall_count = 0
-        # Institutional retry logic
-        self.session = requests.Session()
+        self.session = self._build_session()
+
+    def _build_session(self) -> requests.Session:
+        """Institutional retry logic. Also called to replace a session
+        after a hard-deadline stall (see fetch_historical) -- a fresh
+        session means the next request gets a clean connection instead of
+        retrying whatever hung."""
+        session = requests.Session()
         retries = Retry(
             total=5,
             backoff_factor=2,
             status_forcelist=[429, 500, 502, 503, 504],
             allowed_methods=["GET"]
         )
-        self.session.mount("https://", HTTPAdapter(max_retries=retries))
+        session.mount("https://", HTTPAdapter(max_retries=retries))
+        return session
 
     def fetch_historical(
         self, 
@@ -89,6 +96,19 @@ class UpstoxDataProvider:
                     f"[UpstoxData] Hard deadline ({self._HARD_DEADLINE}s) exceeded fetching "
                     f"{instrument_key} — abandoning stalled connection, continuing"
                 )
+                # 2026-08-07: 7 consecutive stalls across different symbols
+                # in one run, zero clean fetches in between -- consistent
+                # with every request in that window reusing the same
+                # poisoned pooled connection, not 7 independent bad
+                # instruments. Reusing self.session for the next call would
+                # just hang on the same dead connection again. Drop it and
+                # build a fresh session so the next request gets a clean
+                # connection instead of retrying the one that just hung.
+                try:
+                    self.session.close()
+                except Exception:
+                    pass
+                self.session = self._build_session()
                 return pd.DataFrame()
 
             if "error" in outcome:
