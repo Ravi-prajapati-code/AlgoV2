@@ -11,7 +11,7 @@ pre-market (~9:17 IST):
 Execution-only -- does no scoring itself. Reads the day's ranking from
 db/momentum_atr.db (table daily_ranking), written earlier the same
 morning by scripts/precompute_momentum_atr_ranking.py's own cron
-(~08:00 IST, see that script's docstring). Split out after the
+(08:50 IST, see that script's docstring). Split out after the
 2026-08-07 first live run: scoring the ~509-symbol universe took ~10min
 on a cold cache, so order placement didn't start right at 9:17. If
 today's ranking is missing (precompute failed or hasn't run), this

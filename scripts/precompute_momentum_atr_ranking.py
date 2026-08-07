@@ -1,10 +1,12 @@
 #!/usr/bin/env python3
 """
 Pre-market ranking cron for the standalone momentum x ATR live strategy
-(docs/57, docs/58; plan velvet-cooking-minsky). Runs once per weekday well
-before market open (~08:00 IST):
+(docs/57, docs/58; plan velvet-cooking-minsky). Runs once per weekday
+pre-market, AFTER the token pipeline (08:30 refresh, 08:45 verify --
+Upstox access tokens expire daily at 3:30 AM IST, so anything scheduled
+before the 08:30 refresh would run against a dead/missing token):
 
-  0 8 * * 1-5 cd /home/ubuntu/AlgoV2 && flock -n /tmp/algov2_momentum_atr_precompute.lock \
+  50 8 * * 1-5 cd /home/ubuntu/AlgoV2 && flock -n /tmp/algov2_momentum_atr_precompute.lock \
     -c "timeout 1800 .venv/bin/python scripts/precompute_momentum_atr_ranking.py" \
     >> logs/momentum_atr_precompute.log 2>&1
 
