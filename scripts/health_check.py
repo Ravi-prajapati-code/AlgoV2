@@ -1,6 +1,16 @@
 """
 Post-run health check — runs at 15:55 IST after the 15:45 daily runner.
-Alerts via Telegram if today's log is missing or empty (run failed silently).
+Alerts via Telegram if today's log is missing/empty, or if the run never
+reached completion at all (checked via db.repository.snapshot_exists_for_date
+-- the same idempotency marker daily_runner.run() itself uses -- not just
+by grepping the log for "ERROR"/"Traceback"). 2026-08-07 incident: the
+900s `timeout` cron wrapper SIGTERM-killed the run mid-fetch after a burst
+of stalls; the log was neither missing nor empty (500+ lines of normal
+per-symbol fetch progress plus some ERROR lines from the stalls), so the
+old log-content check would have filed it as a low-severity "errors
+detected" WARNING even though ZERO orders were placed and the run never
+got anywhere near scoring/execution. A log existing (even with some
+errors) is not proof the run finished -- only the snapshot row is.
 """
 
 import os
@@ -57,6 +67,20 @@ if __name__ == "__main__":
             f"Check: `logs/daily_run_{today_str}.log`"
         )
         print(f"ALERT: log file empty — {log_file}")
+        sys.exit(1)
+
+    from db.repository import snapshot_exists_for_date
+    if not snapshot_exists_for_date(date.today()):
+        send(
+            f"*Algo Health Check — {today_label}* 🔴\n"
+            f"Daily runner did NOT reach completion -- no snapshot row for "
+            f"today (log has output, so it started, but never finished; "
+            f"likely killed by the 900s cron timeout mid-run). ZERO orders "
+            f"placed today if this happened during the fetch/scoring phase. "
+            f"Open positions got no exit/trailing-stop check.\n"
+            f"Check: `logs/daily_run_{today_str}.log`"
+        )
+        print(f"ALERT: run started but never completed (no snapshot row) — {log_file}")
         sys.exit(1)
 
     if "ERROR" in content or "Traceback" in content:

@@ -76,16 +76,49 @@ def _audit_live_session():
         _audit_abort(f"Failed to connect to Upstox API: {e}")
 
 
+def _install_timeout_kill_alert(today: date, live_mode: bool):
+    """The cron wrapper runs this under `timeout 900` with no -k grace
+    period, so an overrun gets exactly one SIGTERM and nothing else --
+    Python's default handler just dies silently. 2026-08-07 incident: a
+    burst of fetch stalls burned the whole 900s budget, the process died
+    mid-fetch with ZERO orders placed, and nobody found out until a human
+    checked ~40min later (health_check.py's next scheduled run, and even
+    that would have mislabeled it a minor "errors detected" warning, not
+    "never completed" -- see that file's now-fixed snapshot_exists_for_date
+    check). Catching SIGTERM here alerts the instant the kill happens
+    instead of waiting on the next scheduled check."""
+    import signal
+
+    def _handler(signum, frame):
+        try:
+            from notifications.telegram import send_message
+            mode = "LIVE" if live_mode else "PAPER"
+            send_message(
+                f"🔴 <b>Daily Runner KILLED by timeout -- {today} [{mode}]</b>\n"
+                f"Process did not finish within its 900s budget. See "
+                f"logs/daily_run_{today.strftime('%Y%m%d')}.log for how far "
+                f"it got. If this happened during data fetch/scoring, ZERO "
+                f"orders were placed and open positions got no exit/"
+                f"trailing-stop check today."
+            )
+        except Exception:
+            pass
+        sys.exit(1)
+
+    signal.signal(signal.SIGTERM, _handler)
+
+
 def cmd_run(args):
     from runner.daily_runner import run
     from datetime import datetime
-    
+
     if args.live:
         _audit_live_session()
 
-    today = None
+    today = date.today()
     if args.date:
         today = datetime.strptime(args.date, "%Y-%m-%d").date()
+    _install_timeout_kill_alert(today, args.live)
     run(today=today, live_mode=args.live, fund_injection=args.inject)
 
 
