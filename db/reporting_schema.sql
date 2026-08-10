@@ -23,7 +23,7 @@ CREATE TABLE IF NOT EXISTS broker_snapshot (
     ts              TEXT NOT NULL,
     broker_cash     REAL NOT NULL,
     total_equity    REAL NOT NULL,
-    holdings_json   TEXT NOT NULL   -- symbol -> qty, as reported by broker
+    holdings_json   TEXT NOT NULL   -- symbol -> {qty, avg_price, ltp}, as reported by broker
 );
 
 -- Per-strategy capital view, one row per snapshot cycle per strategy.

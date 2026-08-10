@@ -34,7 +34,8 @@ st.sidebar.divider()
 page = st.sidebar.radio(
     "Navigate",
     ["Overview", "Open Positions", "Today's Signals", "Trade History",
-     "Strategy Health", "Backtest"],
+     "Strategy Health", "Backtest",
+     "Global Overview (All Strategies)", "Risk Monitor", "System Health & Cron"],
     index=0,
 )
 
@@ -70,4 +71,16 @@ elif page == "Strategy Health":
 
 elif page == "Backtest":
     from dashboard.views.backtest import render
+    render()
+
+elif page == "Global Overview (All Strategies)":
+    from dashboard.views.global_overview import render
+    render()
+
+elif page == "Risk Monitor":
+    from dashboard.views.risk_monitor import render
+    render()
+
+elif page == "System Health & Cron":
+    from dashboard.views.system_health import render
     render()

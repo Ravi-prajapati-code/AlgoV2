@@ -177,8 +177,8 @@ def test_reconciliation_flags_momentum_atr_ghost_position_new_check(snap):
 
 def test_get_broker_snapshot_filters_non_cnc_positions(snap, monkeypatch):
     fake_positions = [
-        SimpleNamespace(symbol="RELIANCE.NS", quantity=5, ltp=2500.0, product="CNC"),
-        SimpleNamespace(symbol="NIFTY.NS", quantity=1, ltp=100.0, product="MIS"),
+        SimpleNamespace(symbol="RELIANCE.NS", quantity=5, avg_price=2400.0, ltp=2500.0, product="CNC"),
+        SimpleNamespace(symbol="NIFTY.NS", quantity=1, avg_price=90.0, ltp=100.0, product="MIS"),
     ]
     fake_broker = SimpleNamespace(
         get_positions=lambda: fake_positions,
@@ -190,6 +190,28 @@ def test_get_broker_snapshot_filters_non_cnc_positions(snap, monkeypatch):
 
     assert result["qty_by_symbol"] == {"RELIANCE.NS": 5}
     assert result["total_equity"] == 10000.0 + 5 * 2500.0
+    assert result["holdings"] == {
+        "RELIANCE.NS": {"qty": 5, "avg_price": 2400.0, "ltp": 2500.0},
+    }
+
+
+def test_get_broker_snapshot_holdings_avg_price_qty_weighted_across_lots(snap, monkeypatch):
+    """Same symbol across short-term + long-term legs must weight-average
+    avg_price by qty, not just take the last lot seen."""
+    fake_positions = [
+        SimpleNamespace(symbol="TCS.NS", quantity=2, avg_price=3000.0, ltp=3200.0, product="CNC"),
+        SimpleNamespace(symbol="TCS.NS", quantity=8, avg_price=3100.0, ltp=3200.0, product="CNC"),
+    ]
+    fake_broker = SimpleNamespace(
+        get_positions=lambda: fake_positions,
+        get_available_cash=lambda: 0.0,
+    )
+    monkeypatch.setattr("broker.upstox.UpstoxBroker", lambda: fake_broker)
+
+    result = snap.get_broker_snapshot()
+
+    assert result["holdings"]["TCS.NS"]["qty"] == 10
+    assert result["holdings"]["TCS.NS"]["avg_price"] == pytest.approx(3080.0)
 
 
 def test_get_broker_snapshot_returns_none_when_empty(snap, monkeypatch):

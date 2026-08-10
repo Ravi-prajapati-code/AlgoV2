@@ -59,16 +59,27 @@ def get_broker_snapshot():
 
     qty_by_symbol = {}
     ltp_by_symbol = {}
+    cost_by_symbol = {}  # qty-weighted, for a correct avg_price if a symbol spans lots
     for p in positions:
         if p.product != "CNC":
             continue
         qty_by_symbol[p.symbol] = qty_by_symbol.get(p.symbol, 0) + p.quantity
+        cost_by_symbol[p.symbol] = cost_by_symbol.get(p.symbol, 0.0) + p.quantity * p.avg_price
         ltp_by_symbol[p.symbol] = p.ltp
     invested = sum(qty_by_symbol[s] * ltp_by_symbol[s] for s in qty_by_symbol)
+    holdings = {
+        s: {
+            "qty": qty_by_symbol[s],
+            "avg_price": cost_by_symbol[s] / qty_by_symbol[s] if qty_by_symbol[s] else 0.0,
+            "ltp": ltp_by_symbol[s],
+        }
+        for s in qty_by_symbol
+    }
     return {
         "cash": cash,
         "qty_by_symbol": qty_by_symbol,
         "ltp_by_symbol": ltp_by_symbol,
+        "holdings": holdings,
         "total_equity": cash + invested,
     }
 
@@ -208,7 +219,7 @@ def main():
     main_positions, main_snapshot = get_main_state()
     atr_positions, atr_state = get_momentum_atr_state()
 
-    rrepo.save_broker_snapshot(ts, broker_snap["cash"], broker_snap["total_equity"], broker_snap["qty_by_symbol"])
+    rrepo.save_broker_snapshot(ts, broker_snap["cash"], broker_snap["total_equity"], broker_snap["holdings"])
     position_rows = snapshot_positions(ts, main_positions, atr_positions, broker_snap)
     snapshot_main_capital(ts, main_snapshot)
     snapshot_atr_capital(ts, atr_positions, atr_state, broker_snap)

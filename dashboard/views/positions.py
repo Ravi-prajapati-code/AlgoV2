@@ -6,6 +6,9 @@ sys.path.insert(0, str(Path(__file__).parent.parent.parent))
 
 import json
 import os
+from dataclasses import dataclass
+from datetime import datetime
+
 import streamlit as st
 import pandas as pd
 
@@ -13,18 +16,37 @@ from dashboard.charts import sector_allocation_pie
 from config.settings import OUTPUTS_DIR
 
 
-def _fetch_broker_holdings() -> list:
-    """Returns all holdings from Upstox broker."""
+@dataclass
+class _Holding:
+    """Shim so downstream code (written for broker/base.py's LivePosition)
+    doesn't care whether a holding came from a live call or a DB snapshot."""
+    symbol: str
+    quantity: int
+    avg_price: float
+    ltp: float
+
+
+def _fetch_broker_holdings():
+    """Reads the latest broker_snapshot row from the reporting DB (docs/60
+    Phase 1) instead of calling Upstox live on every render -- that live
+    call was firing on every page load with no caching, hammering the
+    broker API for no reason. Snapshots land here every ~15min via
+    scripts/observability_snapshot.py; this page shows their age so the
+    data is never presented as real-time when it isn't.
+    Returns (holdings_list, snapshot_ts_or_None)."""
     try:
-        live_trading = os.getenv("LIVE_TRADING", "false").lower() in ("true", "1", "yes")
-        if not live_trading:
-            return []
-        from broker.upstox import UpstoxBroker
-        broker = UpstoxBroker()
-        return broker.get_holdings()
+        from db import reporting_repo
+        snap = reporting_repo.load_latest_broker_snapshot()
     except Exception as e:
-        st.caption(f"Live price fetch failed: {e}")
-        return []
+        st.caption(f"Broker snapshot read failed: {e}")
+        return [], None
+    if snap is None:
+        return [], None
+    holdings = [
+        _Holding(symbol=sym, quantity=int(h["qty"]), avg_price=float(h["avg_price"]), ltp=float(h["ltp"]))
+        for sym, h in snap["holdings"].items()
+    ]
+    return holdings, snap["ts"]
 
 
 def render():
@@ -38,16 +60,25 @@ def render():
     with open(state_path) as f:
         state = json.load(f)
 
-    # ── Fetch all broker holdings ──────────────────────────────────────
-    all_holdings = _fetch_broker_holdings()
+    # ── Latest broker snapshot (periodic, not live-per-render) ─────────
+    all_holdings, snapshot_ts = _fetch_broker_holdings()
     holdings_map  = {h.symbol: h for h in all_holdings}
+    if snapshot_ts:
+        try:
+            age_min = (datetime.now() - datetime.fromisoformat(snapshot_ts)).total_seconds() / 60
+            staleness = f" ({age_min:.0f} min old)" if age_min >= 1 else " (<1 min old)"
+        except ValueError:
+            staleness = ""
+        st.caption(f"Broker snapshot as of **{snapshot_ts}**{staleness} — refreshed periodically, not on page load.")
+    elif not all_holdings:
+        st.caption("No broker snapshot available yet — showing last-run figures only.")
 
     strategy_positions = state.get("positions", [])
     strategy_symbols   = {p["symbol"] for p in strategy_positions}
 
     # ── Section 1: Strategy-managed positions ─────────────────────────
     st.subheader("Strategy Positions")
-    price_source = "Live (Upstox)" if all_holdings else f"Last run ({state.get('date', '—')})"
+    price_source = f"Broker snapshot ({snapshot_ts})" if all_holdings else f"Last run ({state.get('date', '—')})"
     st.caption(f"Price source: **{price_source}**")
 
     if not strategy_positions:
