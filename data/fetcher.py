@@ -55,7 +55,7 @@ def _fetch_raw(symbol: str, start: date, end: date) -> pd.DataFrame:
             df = _upstox_provider.fetch_historical(instrument_key, to_date=end, from_date=start, interval="day")
             if not df.empty:
                 df.index = pd.to_datetime(df.index).tz_localize(None)
-                logger.info(f"[Fetcher] Fetched {symbol} from Upstox API ({len(df)} days)")
+                logger.debug(f"[Fetcher] Fetched {symbol} from Upstox API ({len(df)} days)")
                 return df
         except Exception as e:
             logger.warning(f"[Fetcher] Upstox API failed for {symbol}: {e}")
@@ -84,13 +84,13 @@ def fetch_symbol(symbol: str, lookback_days: int = LOOKBACK_DAYS, start: Optiona
                         'close': 'last',
                         'volume': 'sum'
                     }).dropna()
-                    logger.info(f"[Fetcher] Loaded {symbol} from Parquet (Resampled from 1min)")
+                    logger.debug(f"[Fetcher] Loaded {symbol} from Parquet (Resampled from 1min)")
                     return df_daily.sort_index()
                 elif interval == "1minute" and not is_minute:
                     logger.warning(f"[Fetcher] requested 1minute but {symbol} Parquet is daily data")
                     return df_parquet.sort_index()
                 else:
-                    logger.info(f"[Fetcher] Loaded {symbol} from Parquet ({interval})")
+                    logger.debug(f"[Fetcher] Loaded {symbol} from Parquet ({interval})")
                     return df_parquet.sort_index()
         except Exception as e:
             logger.warning(f"[Fetcher] Failed to read Parquet for {symbol}: {e}")

@@ -76,7 +76,7 @@ class UpstoxDataProvider:
         url = f"{self.BASE_URL}/{instrument_key}/{interval}/{to_date_str}/{from_date_str}"
 
         try:
-            logger.info(f"[UpstoxData] Fetching {instrument_key} {interval} from {from_date_str} to {to_date_str}")
+            logger.debug(f"[UpstoxData] Fetching {instrument_key} {interval} from {from_date_str} to {to_date_str}")
 
             outcome = {}
 
