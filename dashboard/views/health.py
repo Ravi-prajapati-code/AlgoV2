@@ -4,10 +4,8 @@ import sys
 from pathlib import Path
 sys.path.insert(0, str(Path(__file__).parent.parent.parent))
 
-import math
 import os
 from datetime import date, timedelta
-from typing import List
 
 import streamlit as st
 import pandas as pd
@@ -15,34 +13,10 @@ import plotly.graph_objects as go
 
 from db.repository import load_trades, load_snapshots
 from config.settings import INITIAL_CAPITAL
+from dashboard.metrics import sharpe as _sharpe, profit_factor as _profit_factor, max_dd as _max_dd
 
 
 # ── Helpers ───────────────────────────────────────────────────────────────────
-
-def _sharpe(returns: List[float]) -> float:
-    if len(returns) < 5:
-        return 0.0
-    mean = sum(returns) / len(returns)
-    var  = sum((r - mean) ** 2 for r in returns) / len(returns)
-    std  = math.sqrt(var)
-    return (mean / std) * math.sqrt(252) if std > 0 else 0.0
-
-
-def _profit_factor(trades) -> float:
-    wins   = sum(t.net_pnl for t in trades if t.net_pnl and t.net_pnl > 0)
-    losses = sum(abs(t.net_pnl) for t in trades if t.net_pnl and t.net_pnl < 0)
-    return round(wins / losses, 2) if losses > 0 else float("inf")
-
-
-def _max_dd(values: List[float]) -> float:
-    peak = 0.0
-    max_dd = 0.0
-    for v in values:
-        peak = max(peak, v)
-        dd   = (peak - v) / peak if peak > 0 else 0.0
-        max_dd = max(max_dd, dd)
-    return max_dd
-
 
 def _score_color(score: float) -> str:
     if score >= 70:

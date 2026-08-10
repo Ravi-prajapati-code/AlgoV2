@@ -366,8 +366,8 @@ Columns: **Requirement | Data Source | Existing/New | Strategy | Calculation | R
 
 | Requirement | Data Source | Existing/New | Strategy | Calculation | Refresh | Risk |
 |---|---|---|---|---|---|---|
-| MAIN order/fill detail | `trades.entry_order_id`/exit equivalents — **note**: MAIN's `trades` schema has no explicit `entry_order_id`/`exit_order_id` columns (unlike momentum_atr's `trades`, which does) | Existing, partial | main | direct read where available | Per run | Medium — MAIN order-id traceability weaker than momentum_atr's |
-| momentum_atr order/fill detail | `trades.entry_order_id`, `trades.exit_order_id` | Existing | momentum_atr | direct read | Per run | Low |
+| MAIN order/fill detail | none — **correction (2026-08-10, verified against `db/models.py`/`db/schema.sql`)**: MAIN has no `entry_order_id`/`exit_order_id` columns on either `positions` or `trades`. No order-id traceability exists for this strategy at all. | Existing, N/A | main | — | Per run | Medium — no order-id traceability |
+| momentum_atr order/fill detail | **correction (2026-08-10, verified against `db/momentum_atr_schema.sql`)**: the original claim that `trades` has both `entry_order_id` and `exit_order_id` was false. `entry_order_id` lives only on the OPEN `positions` row and is dropped when the position closes into a `trades` record; `trades` persists `exit_order_id` only. So traceability is open-position entry-side + closed-trade exit-side — never both for the same closed trade. | Existing, partial | momentum_atr | direct read (positions for entry, trades for exit) | Per run | Medium — entry-side lost on close |
 
 ### Page 8 — Trade Journal
 

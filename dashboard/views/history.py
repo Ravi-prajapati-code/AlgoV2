@@ -8,7 +8,7 @@ import streamlit as st
 import pandas as pd
 
 from dashboard.charts import trade_history_chart
-from db.repository import load_trades
+from db.repository import load_trades, load_signals
 
 
 def render():
@@ -27,23 +27,32 @@ def render():
             icon="⚠️",
         )
 
+    # Entry reason isn't a column on trades — join back to the BUY signal
+    # that (symbol, entry_date) came from. A miss (e.g. manual/legacy entry
+    # predating signal logging) shows "—", never a guessed reason.
+    entry_reason_by_key = {
+        (s.symbol, s.date): s.reason
+        for s in load_signals(action="BUY")
+    }
+
     rows = []
     for t in trades:
         entry_px = f"₹{t.entry_price:,.2f}" if t.entry_price else "—"
         exit_px  = f"₹{t.exit_price:,.2f}"  if t.exit_price  else "—"
         rows.append({
-            "Symbol":      t.symbol,
-            "Sector":      t.sector,
-            "Entry Date":  str(t.entry_date),
-            "Exit Date":   str(t.exit_date),
-            "Hold Days":   t.hold_days,
-            "Entry ₹":     entry_px,
-            "Exit ₹":      exit_px,
-            "Shares":      t.shares,
-            "Gross P&L":   t.gross_pnl,
-            "Charges":     t.charges,
-            "Net P&L":     t.net_pnl,
-            "Exit Reason": t.exit_reason,
+            "Symbol":       t.symbol,
+            "Sector":       t.sector,
+            "Entry Date":   str(t.entry_date),
+            "Entry Reason": entry_reason_by_key.get((t.symbol, t.entry_date), "—"),
+            "Exit Date":    str(t.exit_date),
+            "Hold Days":    t.hold_days,
+            "Entry ₹":      entry_px,
+            "Exit ₹":       exit_px,
+            "Shares":       t.shares,
+            "Gross P&L":    t.gross_pnl,
+            "Charges":      t.charges,
+            "Net P&L":      t.net_pnl,
+            "Exit Reason":  t.exit_reason,
         })
 
     df = pd.DataFrame(rows)

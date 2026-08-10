@@ -237,6 +237,24 @@ def load_daily_ranking(d: date) -> Optional[Tuple[List[str], Dict[str, float]]]:
     return json.loads(row["ranked_json"]), json.loads(row["closes_json"])
 
 
+def load_recent_daily_rankings(limit: int = 2) -> List[Tuple[date, List[str]]]:
+    """Returns up to `limit` most recent (date, ranked) pairs, newest first.
+    Read-only helper for the dashboard's Signals page, which needs the
+    latest ranking plus the prior one to compute rank-change deltas --
+    load_daily_ranking() above requires an exact known date and can't do
+    that alone."""
+    conn = get_connection()
+    rows = conn.execute(
+        "SELECT date, ranked_json FROM daily_ranking ORDER BY date DESC LIMIT ?",
+        (limit,)
+    ).fetchall()
+    conn.close()
+    return [
+        (datetime.strptime(r["date"], "%Y-%m-%d").date(), json.loads(r["ranked_json"]))
+        for r in rows
+    ]
+
+
 # ── SLA CHECKPOINTS (pipeline-stage watchdog) ────────────────────────────
 
 def record_sla_checkpoint(d: date, step: str, status: str, detail: str = "") -> None:
