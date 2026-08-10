@@ -294,6 +294,12 @@ MOMENTUM_ATR_DD_KILL_PCT     = float(os.getenv("MOMENTUM_ATR_DD_KILL_PCT", 0.25)
 # a fixed number -- see momentum_atr/execution.py:_get_effective_cash.
 MOMENTUM_ATR_CAPITAL_ALLOCATION_PCT = float(os.getenv("MOMENTUM_ATR_CAPITAL_ALLOCATION_PCT", 0.40))
 
+# Observability/dashboard reporting layer (docs/60) — physically separate
+# SQLite file from every strategy DB above; read-only against trading.db
+# and momentum_atr.db, writes only land here. Never a source of truth for
+# trading decisions -- a derived/cached view for the dashboard only.
+REPORTING_DB_PATH = os.getenv("REPORTING_DB_PATH_OVERRIDE", "db/reporting.db")
+
 # ──────────────────────────────────────────────
 # BACKTEST ACCEPTANCE CRITERIA
 # ──────────────────────────────────────────────
