@@ -109,7 +109,7 @@ def _install_timeout_kill_alert(today: date, live_mode: bool):
 
 
 def cmd_run(args):
-    from runner.daily_runner import run
+    from runner.daily_runner import run, _alert_run_abort
     from datetime import datetime
 
     if args.live:
@@ -119,7 +119,28 @@ def cmd_run(args):
     if args.date:
         today = datetime.strptime(args.date, "%Y-%m-%d").date()
     _install_timeout_kill_alert(today, args.live)
-    run(today=today, live_mode=args.live, fund_injection=args.inject)
+    try:
+        completed = run(
+            today=today, live_mode=args.live, fund_injection=args.inject,
+            force_live_fetch=getattr(args, "force_live_fetch", False),
+        )
+    except Exception as e:
+        # Catch-all for ordinary uncaught exceptions mid-run -- the SIGTERM
+        # handler above only covers the timeout-kill case (2026-08-07).
+        # _alert_run_abort() writes an "ABORTED" checkpoint as a side effect;
+        # this CRASHED write must come after so it's the final state on record.
+        if args.live:
+            _alert_run_abort(today, args.live, f"Unhandled exception: {e}")
+            from db.repository import record_sla_checkpoint
+            record_sla_checkpoint(today, "EXECUTION", "CRASHED", str(e))
+        raise
+    else:
+        # completed is True only on full successful completion; False means
+        # run() already recorded ABORTED internally, None means a benign
+        # skip (holiday / already ran today) that shouldn't touch the SLA row.
+        if args.live and completed is True:
+            from db.repository import record_sla_checkpoint
+            record_sla_checkpoint(today, "EXECUTION", "OK", "")
 
 
 
@@ -356,6 +377,9 @@ def main():
     run_parser = sub.add_parser("run", help="Run today's signal pipeline")
     run_parser.add_argument("--live", action="store_true", help="Enable live trading mode")
     run_parser.add_argument("--date", help="Simulate a specific date (YYYY-MM-DD)")
+    run_parser.add_argument("--force-live-fetch", action="store_true",
+                            help="Bypass precomputed indicators and fetch/score live inline "
+                                 "(emergency escape hatch if PRECOMPUTE didn't run)")
     run_parser.add_argument("--inject", type=float, default=0.0,
                             metavar="AMOUNT",
                             help="Record a fund injection today in ₹ (paper mode). "

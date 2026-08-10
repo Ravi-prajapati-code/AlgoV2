@@ -412,6 +412,97 @@ def snapshot_exists_for_date(d: date) -> bool:
     return row is not None
 
 
+def _json_safe(obj):
+    """json.dumps default= hook. indicators/composite.py builds per-symbol
+    dicts from pandas .iloc[-1] reads -- numpy.int64/numpy.bool_ don't
+    subclass Python int/bool and raise TypeError under plain json.dumps."""
+    if hasattr(obj, "item"):
+        return obj.item()
+    raise TypeError(f"Object of type {type(obj)} is not JSON serializable")
+
+
+def save_precompute_indicators(
+    d: date, indicators: dict, regime: str, market_bullish: bool,
+    strong_bull: bool, index_candles: int, stalls: int = 0,
+) -> None:
+    """Persist the main strategy's precompute output (fetch_all + RS +
+    compute_all), keyed UNIQUE(date), for the 14:55 execute step to read
+    instead of recomputing. regime/market_bullish/strong_bull are stored
+    for diagnostics only -- execute always recomputes these fresh."""
+    conn = get_connection()
+    conn.execute(
+        """INSERT OR REPLACE INTO precompute_indicators
+           (date, indicators_json, regime, market_bullish, strong_bull,
+            index_candles, scored_count, stalls, computed_at)
+           VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)""",
+        (
+            d.strftime("%Y-%m-%d"),
+            json.dumps(indicators, default=_json_safe),
+            regime,
+            int(market_bullish),
+            int(strong_bull),
+            index_candles,
+            len(indicators),
+            stalls,
+            datetime.now().isoformat(),
+        ),
+    )
+    conn.commit()
+    conn.close()
+
+
+def load_precompute_indicators(d: date) -> Optional[dict]:
+    """Return today's precomputed indicators row, or None if precompute
+    hasn't run/completed yet -- absence must be treated as "not available",
+    never silently substituted with a fresh live fetch by the caller."""
+    conn = get_connection()
+    row = conn.execute(
+        "SELECT * FROM precompute_indicators WHERE date = ?", (d.strftime("%Y-%m-%d"),)
+    ).fetchone()
+    conn.close()
+    if row is None:
+        return None
+    return {
+        "indicators": json.loads(row["indicators_json"]),
+        "regime": row["regime"],
+        "market_bullish": bool(row["market_bullish"]),
+        "strong_bull": bool(row["strong_bull"]),
+        "index_candles": row["index_candles"],
+        "scored_count": row["scored_count"],
+        "stalls": row["stalls"],
+        "computed_at": row["computed_at"],
+    }
+
+
+def record_sla_checkpoint(d: date, step: str, status: str, detail: str = "") -> None:
+    """Written at the end of every PRECOMPUTE/EXECUTION attempt (OK/
+    ABORTED/CRASHED) so scripts/main_sla_check.py can tell "ran and
+    failed" apart from "never ran at all", which a log-exists check
+    can't. UNIQUE(date, step) -- a same-day rerun overwrites, not
+    duplicates."""
+    conn = get_connection()
+    conn.execute(
+        """INSERT OR REPLACE INTO sla_checkpoints (date, step, status, detail, ts)
+           VALUES (?, ?, ?, ?, ?)""",
+        (d.strftime("%Y-%m-%d"), step, status, detail, datetime.now().isoformat()),
+    )
+    conn.commit()
+    conn.close()
+
+
+def load_sla_checkpoints(d: date) -> dict:
+    """Return {step: {status, detail, ts}} for the given date. Empty dict
+    if nothing was recorded -- that absence is itself the "never ran"
+    signal callers need."""
+    conn = get_connection()
+    rows = conn.execute(
+        "SELECT step, status, detail, ts FROM sla_checkpoints WHERE date = ?",
+        (d.strftime("%Y-%m-%d"),),
+    ).fetchall()
+    conn.close()
+    return {r["step"]: {"status": r["status"], "detail": r["detail"], "ts": r["ts"]} for r in rows}
+
+
 def load_baseline_capital() -> Optional[float]:
     """Organic starting capital: first snapshot total_value minus any injection detected on day 1."""
     conn = get_connection()

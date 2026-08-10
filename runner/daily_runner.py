@@ -21,6 +21,7 @@ from db.repository import (
     init_db, load_positions, load_snapshots, save_signal,
     save_position, close_position_and_save_trade, get_last_position, was_sold_today,
     snapshot_exists_for_date, get_last_ohlcv_close, bear_swing_sold_within, load_trades,
+    load_precompute_indicators, record_sla_checkpoint,
 )
 
 # A prev DB record only counts as a genuine sync gap (broker API hiccup, T+1 timing)
@@ -64,6 +65,11 @@ def _alert_run_abort(today: date, live_mode: bool, reason: str) -> None:
     A silently-skipped run leaves open positions unmanaged (stops not refreshed,
     exits not taken) until the next session — the operator must know. Best-effort."""
     mode = "LIVE" if live_mode else "PAPER"
+    if live_mode:
+        # Centralized so every abort path here (broker init, data fetch,
+        # partial universe, missing precompute, ...) is captured — a
+        # log-exists check can't tell "ran and aborted" from "never ran".
+        record_sla_checkpoint(today, "EXECUTION", "ABORTED", str(reason))
     try:
         import html
         from notifications.telegram import send_message
@@ -423,7 +429,7 @@ def _backup_db(today: date) -> None:
             logger.warning("[Backup] Pre-run backup failed: %s", e)
 
 
-def run(today: date = None, live_mode: bool = False, fund_injection: float = 0.0):
+def run(today: date = None, live_mode: bool = False, fund_injection: float = 0.0, force_live_fetch: bool = False):
     if today is None:
         today = date.today()
 
@@ -468,37 +474,66 @@ def run(today: date = None, live_mode: bool = False, fund_injection: float = 0.0
 
     # 5. Fetch stock data (include defensive symbols so they're available for prices)
     symbols = list(dict.fromkeys(get_all_symbols() + ALL_DEFENSIVE_SYMBOLS))
-    data = fetch_all(symbols, live_mode=live_mode)
-    if not data:
-        logger.error("No stock data fetched — aborting")
-        _alert_run_abort(today, live_mode, "No stock data fetched (data provider failure).")
-        return
-    min_required = max(10, len(symbols) // 2)  # need at least 50% of universe
-    if len(data) < min_required:
-        logger.error(
-            "[Data] Only %d/%d symbols fetched (need ≥%d) — aborting to avoid trading on partial universe.",
-            len(data), len(symbols), min_required,
-        )
-        _alert_run_abort(
-            today, live_mode,
-            f"Only {len(data)}/{len(symbols)} symbols fetched (need ≥{min_required}) — partial universe.",
-        )
-        return
 
-    # 5b. Warmup adequacy check — warn if any symbol has < 450 days (EMA150 needs ~450 to converge)
-    MIN_WARMUP = 450
-    thin_symbols = [sym for sym, df in data.items() if sym != MARKET_INDEX_SYMBOL and len(df) < MIN_WARMUP]
-    if thin_symbols:
-        logger.warning(
-            "[Warmup] %d symbol(s) have < %d days of history — EMA(150)/regime may be inaccurate: %s",
-            len(thin_symbols), MIN_WARMUP, thin_symbols[:10],
+    # Precompute/execute split (docs/59): fetch_all + RS + indicator calc is
+    # provably T-1-close data regardless of what time it runs (Upstox never
+    # returns a same-day candle mid-session), so scripts/precompute_main_indicators.py
+    # does this slow, stall-prone pass hours earlier (~09:30) and this step
+    # just reads the result -- keeping the fetch phase off the same 900s
+    # budget as time-critical order placement near close.
+    precomputed = None if force_live_fetch else load_precompute_indicators(today)
+    if precomputed is not None:
+        indicators = precomputed["indicators"]
+        logger.info(
+            "[Precompute] Using precomputed indicators from %s (%d scored, %d stalls, regime=%s)",
+            precomputed["computed_at"], precomputed["scored_count"], precomputed["stalls"], precomputed["regime"],
         )
+        if precomputed["regime"] != regime:
+            logger.warning(
+                "[Precompute] regime drift: precompute saw %s, EXECUTE's fresh fetch sees %s — "
+                "trusting EXECUTE's fresh value.", precomputed["regime"], regime,
+            )
+    else:
+        if not force_live_fetch:
+            logger.error(
+                "No precomputed indicators for %s — PRECOMPUTE did not complete. Aborting EXECUTE "
+                "(no live-fetch fallback this close to close).", today,
+            )
+            _alert_run_abort(
+                today, live_mode,
+                "No precomputed indicators for today — PRECOMPUTE step did not complete. To recover "
+                "before close: re-run scripts/precompute_main_indicators.py, or invoke "
+                "'main.py run --live --force-live-fetch' as an emergency escape hatch.",
+            )
+            return False
+        # --force-live-fetch escape hatch: reproduces the original inline fetch path verbatim
+        data = fetch_all(symbols, live_mode=live_mode)
+        if not data:
+            logger.error("No stock data fetched — aborting")
+            _alert_run_abort(today, live_mode, "No stock data fetched (data provider failure).")
+            return False
+        min_required = max(10, len(symbols) // 2)  # need at least 50% of universe
+        if len(data) < min_required:
+            logger.error(
+                "[Data] Only %d/%d symbols fetched (need ≥%d) — aborting to avoid trading on partial universe.",
+                len(data), len(symbols), min_required,
+            )
+            _alert_run_abort(
+                today, live_mode,
+                f"Only {len(data)}/{len(symbols)} symbols fetched (need ≥{min_required}) — partial universe.",
+            )
+            return False
 
-    # 6. Relative strength — always compute (needed for bear swing even in BEAR regime)
-    rs_data = compute_rs_for_all(data, index_df)
+        MIN_WARMUP = 450
+        thin_symbols = [sym for sym, df in data.items() if sym != MARKET_INDEX_SYMBOL and len(df) < MIN_WARMUP]
+        if thin_symbols:
+            logger.warning(
+                "[Warmup] %d symbol(s) have < %d days of history — EMA(150)/regime may be inaccurate: %s",
+                len(thin_symbols), MIN_WARMUP, thin_symbols[:10],
+            )
 
-    # 7. Compute indicators
-    indicators = compute_all(data, rs_data=rs_data)
+        rs_data = compute_rs_for_all(data, index_df)
+        indicators = compute_all(data, rs_data=rs_data)
 
     # 8. Initialise Broker & Sync
     broker = None
@@ -511,7 +546,7 @@ def run(today: date = None, live_mode: bool = False, fund_injection: float = 0.0
             logger.error(f"[Live] Failed to initialise Upstox broker: {e}")
             logger.error("Aborting live run to prevent state desync.")
             _alert_run_abort(today, live_mode, f"Upstox broker init failed: {e}")
-            return
+            return False
 
     # Sync reality with database before generating new signals
     sync_portfolio_with_broker(broker, today)
@@ -881,6 +916,7 @@ def run(today: date = None, live_mode: bool = False, fund_injection: float = 0.0
         logger.debug("[Drift] Post-run drift check skipped: %s", e)
 
     logger.info("=== Daily Runner complete: %s ===", today)
+    return True
 
 if __name__ == "__main__":
     parser = argparse.ArgumentParser()

@@ -133,6 +133,42 @@ CREATE TABLE IF NOT EXISTS ml_model_runs (
     notes           TEXT
 );
 
+-- ── PRECOMPUTE INDICATORS (main-strategy precompute/execute split) ────────
+-- Written once per morning by scripts/precompute_main_indicators.py (the
+-- slow ~full-universe fetch+RS+indicator pass, provably T-1-close data
+-- regardless of when it runs -- Upstox never returns a same-day candle
+-- mid-session) so the 14:55 execute step (runner/daily_runner.py::run())
+-- reads instead of recomputing. regime/market_bullish/strong_bull here are
+-- diagnostic only -- execute always recomputes those fresh from its own
+-- cheap index fetch and only logs a drift warning against this row.
+CREATE TABLE IF NOT EXISTS precompute_indicators (
+    id              INTEGER PRIMARY KEY AUTOINCREMENT,
+    date            DATE    NOT NULL UNIQUE,
+    indicators_json TEXT    NOT NULL,
+    regime          TEXT    NOT NULL,
+    market_bullish  INTEGER NOT NULL,
+    strong_bull     INTEGER NOT NULL,
+    index_candles   INTEGER NOT NULL,
+    scored_count    INTEGER NOT NULL,
+    stalls          INTEGER NOT NULL DEFAULT 0,
+    computed_at     TEXT    NOT NULL
+);
+
+-- ── SLA CHECKPOINTS (main-strategy pipeline-stage watchdog) ────────────────
+-- Written at the end of every PRECOMPUTE/EXECUTION attempt (OK/ABORTED/
+-- CRASHED) so scripts/main_sla_check.py can distinguish "ran and failed"
+-- from "never ran at all" -- a log-exists check can't. Same shape as
+-- db/momentum_atr_schema.sql's table.
+CREATE TABLE IF NOT EXISTS sla_checkpoints (
+    id              INTEGER PRIMARY KEY AUTOINCREMENT,
+    date            DATE    NOT NULL,
+    step            TEXT    NOT NULL,
+    status          TEXT    NOT NULL,
+    detail          TEXT,
+    ts              TEXT    NOT NULL,
+    UNIQUE(date, step)
+);
+
 -- ── INDEXES ───────────────────────────────────────────────────────────────
 CREATE INDEX IF NOT EXISTS idx_ohlcv_symbol       ON ohlcv_cache (symbol);
 CREATE INDEX IF NOT EXISTS idx_ohlcv_date         ON ohlcv_cache (date);
