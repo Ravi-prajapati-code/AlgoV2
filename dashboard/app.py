@@ -37,7 +37,9 @@ page = st.sidebar.radio(
      "Strategy Health", "Backtest",
      "Global Overview (All Strategies)", "Risk Monitor", "System Health & Cron",
      "P&L / Equity Curve", "Signals (DB History)", "ATR Trade Journal",
-     "Order Monitor", "Strategy Comparison", "Overlapping Signals"],
+     "Order Monitor", "Strategy Comparison", "Overlapping Signals",
+     "Live Positions", "Collision/Overlap", "Cash/Capital Integrity",
+     "Reconciliation", "Alert Center"],
     index=0,
 )
 
@@ -109,4 +111,24 @@ elif page == "Strategy Comparison":
 
 elif page == "Overlapping Signals":
     from dashboard.views.overlapping_signals import render
+    render()
+
+elif page == "Live Positions":
+    from dashboard.views.live_positions import render
+    render()
+
+elif page == "Collision/Overlap":
+    from dashboard.views.collision_overlap import render
+    render()
+
+elif page == "Cash/Capital Integrity":
+    from dashboard.views.capital_integrity import render
+    render()
+
+elif page == "Reconciliation":
+    from dashboard.views.reconciliation import render
+    render()
+
+elif page == "Alert Center":
+    from dashboard.views.alert_center import render
     render()
