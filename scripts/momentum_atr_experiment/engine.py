@@ -40,9 +40,11 @@ def load_universe():
     )
     full = []
     for s in common:
+        if s == "Nifty 50":
+            continue
         df = pd.read_parquet(f"{MDIR}/{s}.parquet")
         d916 = df[(df.index.hour == 9) & (df.index.minute == 16)]
-        if len(d916) == 783:
+        if len(d916) == 868:
             full.append(s)
     return full
 
@@ -129,6 +131,7 @@ def run_sim(symbols, trading_days, score_mat, open_mat, close_by_date,
             exit_threshold=None,       # rank cutoff (rank_gt) or day-count (consecutive)
             freeze_days=None,          # None = daily reassessment (current default)
             enable_swap=True, enable_cascade=True,
+            swap_threshold_pct=3.0,
             rank_fn=None, first_valid_idx=0):
     """Generalized version of the FULL strategy. portfolio_size=N replaces
     the hardcoded "top 3"; exit_mode/exit_threshold replace the hardcoded
@@ -172,13 +175,19 @@ def run_sim(symbols, trading_days, score_mat, open_mat, close_by_date,
 
     def apply_sell(day, sym, reason):
         nonlocal cash
-        pos = positions.pop(sym)
         price = open_mat.loc[day, sym]
+        if pd.isna(price) or price <= 0:
+            return
+        pos = positions.pop(sym)
         cash += pos["shares"] * price
         pnl = (price - pos["entry_price"]) * pos["shares"]
         trade_log.append({"date": str(day), "action": "SELL", "symbol": sym, "shares": pos["shares"], "reason": reason, "pnl": pnl})
 
     def topN_names(day):
+        # day=None means "no prior trading day exists yet" (start of series) --
+        # there is no way to know a top-N pick without look-ahead, so pick nothing.
+        if day is None:
+            return []
         r = rank_fn(day)
         r = r.head(N) if hasattr(r, "head") else r[:N]
         return list(r.index) if hasattr(r, "index") else list(r)
@@ -204,11 +213,18 @@ def run_sim(symbols, trading_days, score_mat, open_mat, close_by_date,
 
     for i in range(first_valid_idx, len(trading_days)):
         day = trading_days[i]
+        # score_mat.loc[d] is built from day d's own close/high/low (see
+        # compute_scores) -- it is only known after day d's market close.
+        # Any decision executed at day D's open must therefore rank on
+        # pday's score, never day's own. Post-close decisions (the rank-exit
+        # scheduling below, at ~line 300) correctly use `day` itself, since
+        # that decision is only *applied* on the next iteration's open.
+        pday = trading_days[i - 1] if i > 0 else None
         if pd.isna(open_mat.loc[day, symbols]).all():
             continue
 
         if not initial_done:
-            names = topN_names(day)
+            names = topN_names(pday)
             if len(names) < N:
                 continue
             cash, bought = buy_split(day, names, cash)
@@ -219,13 +235,13 @@ def run_sim(symbols, trading_days, score_mat, open_mat, close_by_date,
             if enable_swap and pending_swap is not None:
                 loser, winner = pending_swap
                 if loser in positions:
-                    apply_sell(day, loser, "STOP_LOSS_-3%_SWAP")
+                    apply_sell(day, loser, f"STOP_LOSS_-{swap_threshold_pct:g}%_SWAP")
                 price = open_mat.loc[day, winner]
                 if pd.notna(price) and price > 0:
                     n = int(cash // price)
                     if n > 0:
                         cash -= n * price
-                        apply_buys(day, {winner: n}, "TAKE_PROFIT_+3%_SWAP")
+                        apply_buys(day, {winner: n}, f"TAKE_PROFIT_+{swap_threshold_pct:g}%_SWAP")
             pending_swap = None
 
             if freeze_days is None and pending_rank_exit is not None:
@@ -233,7 +249,7 @@ def run_sim(symbols, trading_days, score_mat, open_mat, close_by_date,
                 if sym in positions:
                     apply_sell(day, sym, "RANK_RULE_EXIT")
                     outside_days.pop(sym, None)
-                    names = topN_names(day)
+                    names = topN_names(pday)
                     if names and cash > 0:
                         cash, bought = buy_split(day, names, cash)
                         if bought:
@@ -243,7 +259,7 @@ def run_sim(symbols, trading_days, score_mat, open_mat, close_by_date,
             if freeze_days is not None and days_since_reassess >= freeze_days:
                 # full reassessment: exit anything not in the new top-N,
                 # reinvest freed + idle cash equally (+ cascade) into it
-                names = topN_names(day)
+                names = topN_names(pday)
                 for sym in list(positions.keys()):
                     if sym not in names:
                         apply_sell(day, sym, f"FREEZE_REASSESS_{freeze_days}D")
@@ -256,6 +272,26 @@ def run_sim(symbols, trading_days, score_mat, open_mat, close_by_date,
                         apply_buys(day, bought, f"FREEZE_REASSESS_{freeze_days}D_BUY")
                 days_since_reassess = 0
 
+        if not positions:
+            # Reaching here means initial_done is already True (the
+            # not-initial_done branch above either buys-and-proceeds or
+            # continues early), so this is a book that went fully flat
+            # mid-run -- e.g. all N positions exited via swap/rank-exit
+            # without a same-day reallocation target. Without this, the
+            # sim had no remaining code path that ever re-checks for an
+            # entry (pending_rank_exit only gets set by the ranking loop
+            # below, which is itself skipped by this same "no positions"
+            # continue) and would sit in cash for the rest of the window
+            # even with real eligible names on later days (found via the
+            # 2026-09-02 stress-test investigation: extended_bear_grind
+            # went from 8 trades total to a normal count once fixed).
+            # Same all-or-nothing N-name requirement as INITIAL_TOPN_SPLIT.
+            names = topN_names(pday)
+            if len(names) >= N and cash > 0:
+                cash, bought = buy_split(day, names, cash)
+                if bought:
+                    apply_buys(day, bought, "REENTRY_TOPN_AFTER_FLATTEN")
+                    days_since_reassess = 0
         if not positions:
             equity_curve.append({"date": str(day), "equity": cash})
             days_since_reassess += 1
@@ -280,7 +316,7 @@ def run_sim(symbols, trading_days, score_mat, open_mat, close_by_date,
         if enable_swap and returns:
             worst_sym = min(returns, key=returns.get)
             best_sym = max(returns, key=returns.get)
-            if worst_sym != best_sym and returns[worst_sym] <= -3.0 and returns[best_sym] >= 3.0:
+            if worst_sym != best_sym and returns[worst_sym] <= -swap_threshold_pct and returns[best_sym] >= swap_threshold_pct:
                 pending_swap = (worst_sym, best_sym)
 
         if freeze_days is None:
