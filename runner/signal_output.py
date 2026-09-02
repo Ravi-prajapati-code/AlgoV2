@@ -17,10 +17,11 @@ def _ensure_dir():
     os.makedirs(OUTPUTS_DIR, exist_ok=True)
 
 
-def write_signals(today: date, signals: List[Signal]):
+def write_signals(today: date, signals: List[Signal], live_mode: bool = False):
     _ensure_dir()
     data = {
         "generated_at": str(today),
+        "mode": "LIVE" if live_mode else "PAPER",
         "signals": [
             {
                 "symbol":     s.symbol,
@@ -44,6 +45,7 @@ def write_portfolio_state(
     snapshot: PortfolioSnapshot,
     open_positions: List[Position],
     prices: dict,
+    live_mode: bool = False,
 ):
     _ensure_dir()
     from db.repository import load_baseline_capital, total_capital_injected_ever
@@ -76,6 +78,7 @@ def write_portfolio_state(
 
     data = {
         "date":            str(today),
+        "mode":            "LIVE" if live_mode else "PAPER",
         "cash":            snapshot.cash,
         "invested":        snapshot.invested,
         "total_value":     snapshot.total_value,

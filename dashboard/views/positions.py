@@ -60,6 +60,10 @@ def render():
     with open(state_path) as f:
         state = json.load(f)
 
+    mode = state.get("mode", "LIVE")  # older files predate the mode field -- default LIVE, not silently PAPER
+    if mode == "PAPER":
+        st.warning("🧪 **PAPER MODE** — main strategy is not placing real orders. These positions are simulated.")
+
     # ── Latest broker snapshot (periodic, not live-per-render) ─────────
     all_holdings, snapshot_ts = _fetch_broker_holdings()
     holdings_map  = {h.symbol: h for h in all_holdings}

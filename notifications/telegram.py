@@ -64,12 +64,14 @@ def send_daily_summary(
     snapshot: Optional[PortfolioSnapshot],
     open_positions: List[Position] = None,
     prices: dict = None,
+    live_mode: bool = False,
 ):
     """Compose and send the end-of-day summary including current holdings."""
     from db.repository import load_baseline_capital
     from config.settings import INITIAL_CAPITAL
 
-    lines = [f"<b>Algo Swing Trader — {today}</b>"]
+    mode_tag = "🟢 LIVE" if live_mode else "🧪 PAPER (no real orders placed)"
+    lines = [f"<b>[{mode_tag}] Algo Swing Trader — {today}</b>"]
 
     if snapshot:
         from db.repository import total_capital_injected_ever

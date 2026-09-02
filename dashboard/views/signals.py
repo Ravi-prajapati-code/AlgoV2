@@ -25,6 +25,12 @@ def render():
 
     st.caption(f"Generated: {data.get('generated_at', 'unknown')}")
 
+    mode = data.get("mode", "LIVE")  # older files predate the mode field -- default LIVE, not silently PAPER
+    if mode == "PAPER":
+        st.warning("🧪 **PAPER MODE** — these are simulated signals, no real broker orders were placed. Act on them manually if desired.")
+    else:
+        st.success("🟢 **LIVE MODE** — signals were executed on the real broker.")
+
     signals = data.get("signals", [])
     if not signals:
         st.info("No signals generated today.")

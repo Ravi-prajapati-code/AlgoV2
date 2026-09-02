@@ -17,12 +17,31 @@ sys.path.insert(0, str(Path(__file__).parent.parent.parent))
 
 from datetime import datetime
 
+import json
+import os
+
 import pandas as pd
 import streamlit as st
 
 from db.repository import load_positions as load_main_positions
 from db.momentum_atr_repo import load_positions as load_atr_positions
 from db import reporting_repo
+from config.settings import OUTPUTS_DIR
+
+
+def _main_strategy_mode():
+    """PAPER/LIVE tag for the main strategy, sourced from the same
+    portfolio_state.json the Open Positions page reads -- momentum_atr has
+    no paper mode (it's the sole live strategy as of 2026-09-02), so this
+    only applies to the "Main Strategy" column."""
+    path = os.path.join(OUTPUTS_DIR, "portfolio_state.json")
+    if not os.path.exists(path):
+        return "LIVE"
+    try:
+        with open(path) as f:
+            return json.load(f).get("mode", "LIVE")
+    except (json.JSONDecodeError, OSError):
+        return "LIVE"
 
 
 def _broker_ltp_map():
@@ -58,6 +77,8 @@ def render():
 
     with col_main:
         st.subheader("Main Strategy")
+        if _main_strategy_mode() == "PAPER":
+            st.warning("🧪 PAPER — no real broker orders")
         positions = load_main_positions(status="OPEN")
         if not positions:
             st.info("No open positions.")
@@ -81,6 +102,7 @@ def render():
 
     with col_atr:
         st.subheader("Momentum × ATR")
+        st.success("🟢 LIVE — real broker orders")
         positions = load_atr_positions("OPEN")
         if not positions:
             st.info("No open positions.")

@@ -874,11 +874,11 @@ def run(today: date = None, live_mode: bool = False, fund_injection: float = 0.0
 
     for sig in signals:
         save_signal(sig)
-    write_signals(today, signals)
-    
+    write_signals(today, signals, live_mode=live_mode)
+
     if latest_snap:
         # Pass the latest snapshot to the state writer
-        write_portfolio_state(today, latest_snap, mgr.open_positions, prices)
+        write_portfolio_state(today, latest_snap, mgr.open_positions, prices, live_mode=live_mode)
 
     try:
         from notifications.telegram import send_daily_summary
@@ -889,6 +889,7 @@ def run(today: date = None, live_mode: bool = False, fund_injection: float = 0.0
             latest_snap,
             open_positions=mgr.open_positions,
             prices=prices,
+            live_mode=live_mode,
         )
     except Exception as e:
         logger.warning("Telegram alert failed: %s", e)
