@@ -313,12 +313,17 @@ def test_partial_fill_leaves_ledger_untouched(momentum_atr_env):
     assert "A" not in {p.symbol for p in repo.load_positions("OPEN")}
 
 
-def test_allocation_cap_limits_effective_cash(momentum_atr_env):
+def test_allocation_cap_limits_effective_cash(momentum_atr_env, monkeypatch):
     """Real broker cash Rs.60k + other-strategy holding Rs.10k = Rs.70k total
     account equity. At 40% allocation that's a Rs.28k ceiling for this
     strategy -- well below both its internal ledger (Rs.1L) and real broker
-    cash (Rs.60k) alone, so the allocation cap must be the binding limit."""
+    cash (Rs.60k) alone, so the allocation cap must be the binding limit.
+
+    Pinned to 0.40 regardless of the live MOMENTUM_ATR_CAPITAL_ALLOCATION_PCT
+    (server .env runs 1.0) -- this test asserts the cap math, not today's
+    live allocation value."""
     execution, repo, _ = momentum_atr_env
+    monkeypatch.setattr(execution, "MOMENTUM_ATR_CAPITAL_ALLOCATION_PCT", 0.40)
     broker = FakeBroker(
         {}, cash=60_000,
         holdings=[LivePosition(symbol="OTHER.NS", quantity=100, avg_price=100.0,
@@ -328,12 +333,17 @@ def test_allocation_cap_limits_effective_cash(momentum_atr_env):
     assert effective == pytest.approx(28_000.0)
 
 
-def test_first_run_bootstraps_capital_from_real_account(momentum_atr_env):
+def test_first_run_bootstraps_capital_from_real_account(momentum_atr_env, monkeypatch):
     """First-ever run (no positions, no trade history) must replace the
     flat deploy-time placeholder cash/peak_equity with 40% of today's real
     combined account equity, not silently keep trading against a fictional
-    number nobody funded."""
+    number nobody funded.
+
+    Pinned to 0.40 regardless of the live MOMENTUM_ATR_CAPITAL_ALLOCATION_PCT
+    (server .env runs 1.0) -- this test asserts the bootstrap math, not
+    today's live allocation value."""
     execution, repo, _ = momentum_atr_env
+    monkeypatch.setattr(execution, "MOMENTUM_ATR_CAPITAL_ALLOCATION_PCT", 0.40)
     closes = {"A": 100.0, "B": 200.0, "C": 50.0, "D": 10.0}
     _seed_ranking(repo, closes, ["A", "B", "C", "D"])
 
