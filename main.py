@@ -113,6 +113,19 @@ def cmd_run(args):
     from datetime import datetime
 
     if args.live:
+        from config.settings import MAIN_STRATEGY_LIVE_TRADING_ENABLED
+        if not MAIN_STRATEGY_LIVE_TRADING_ENABLED:
+            # Hard stop -- momentum_atr is the only strategy authorized to
+            # trade live (2026-09-07 GOLDBEES incident: main strategy's last
+            # live day left a real position no live strategy tracked). This
+            # check runs before the broker audit so no live-only side effect
+            # (funds lookup, alert wording) can ever fire for main strategy.
+            _audit_abort(
+                "main strategy --live blocked: MAIN_STRATEGY_LIVE_TRADING_ENABLED "
+                "is False in config/settings.py. momentum_atr is the only "
+                "strategy authorized to place real broker orders. If this is "
+                "intentional, flip the flag in a reviewed commit, not an env var."
+            )
         _audit_live_session()
 
     today = date.today()

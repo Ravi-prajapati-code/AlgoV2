@@ -2,12 +2,20 @@
 Position Reconciler — compares DB open positions vs actual Upstox holdings.
 
 Broker-only mismatches (broker holds a symbol DB doesn't know about) are
-auto-fixed: inserted via the same origin-recovery logic daily_runner.py's
-sync uses, reusing add_or_update_broker_positions() so there's one vetted
-implementation instead of two that can drift apart. This was previously
-alert-only, which is how the CEMPRO.NS live-buy-not-yet-persisted incident
-(2026-07-21) sat undetected until caught manually the same day — see
+auto-fixed into main's trading.db ONLY while
+config.settings.MAIN_STRATEGY_LIVE_TRADING_ENABLED is True -- inserted via
+the same origin-recovery logic daily_runner.py's sync uses, reusing
+add_or_update_broker_positions() so there's one vetted implementation
+instead of two that can drift apart. This was previously alert-only, which
+is how the CEMPRO.NS live-buy-not-yet-persisted incident (2026-07-21) sat
+undetected until caught manually the same day — see
 [[cempro_orphan_position_bug_20260722]] in memory.
+
+While main is paper-only, that flag is False and broker-only mismatches
+stay alert-only instead: auto-filing a real holding into a ledger that
+can never place a real matching order again would silently strand it, as
+happened with GOLDBEES.NS on 2026-09-02 (see
+[[goldbees_orphan_position_fold_20260907]] in memory).
 
 DB-only mismatches (DB thinks a position is open, broker doesn't have it)
 stay alert-only — auto-closing on a possibly-stale/erroring broker read
@@ -131,19 +139,31 @@ def run_reconcile():
     fixed = []
     fix_failed = []
     if unknown:
-        from runner.daily_runner import add_or_update_broker_positions
+        from config.settings import MAIN_STRATEGY_LIVE_TRADING_ENABLED
 
-        db_positions = {p.symbol: p for p in load_positions(status="OPEN")}
-        unknown_positions = [p for p in broker_positions if p.symbol in unknown]
-        try:
-            add_or_update_broker_positions(date.today(), unknown_positions, db_positions)
-            # Verify it actually landed before calling it fixed.
-            still_missing = unknown - {p.symbol for p in load_positions(status="OPEN")}
-            fixed = sorted(unknown - still_missing)
-            fix_failed = sorted(still_missing)
-        except Exception as e:
-            logger.error("Auto-fix failed: %s", e)
+        if not MAIN_STRATEGY_LIVE_TRADING_ENABLED:
+            # Main strategy is paper-only -- its trading.db ledger no longer
+            # corresponds to a strategy that places real orders. Auto-filing
+            # a broker-only holding there would silently strand it exactly
+            # like the 2026-09-02 GOLDBEES.NS incident (main bought it live,
+            # then flipped to paper the next day; the real position sat
+            # untracked by any live strategy for 5 days before manual fold-in
+            # into momentum_atr). Alert-only until a human assigns ownership.
             fix_failed = sorted(unknown)
+        else:
+            from runner.daily_runner import add_or_update_broker_positions
+
+            db_positions = {p.symbol: p for p in load_positions(status="OPEN")}
+            unknown_positions = [p for p in broker_positions if p.symbol in unknown]
+            try:
+                add_or_update_broker_positions(date.today(), unknown_positions, db_positions)
+                # Verify it actually landed before calling it fixed.
+                still_missing = unknown - {p.symbol for p in load_positions(status="OPEN")}
+                fixed = sorted(unknown - still_missing)
+                fix_failed = sorted(still_missing)
+            except Exception as e:
+                logger.error("Auto-fix failed: %s", e)
+                fix_failed = sorted(unknown)
 
     lines = [f"⚠️ <b>Position Mismatch — {now_str}</b>"]
 

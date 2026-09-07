@@ -294,6 +294,17 @@ MOMENTUM_ATR_DD_KILL_PCT     = float(os.getenv("MOMENTUM_ATR_DD_KILL_PCT", 0.25)
 # a fixed number -- see momentum_atr/execution.py:_get_effective_cash.
 MOMENTUM_ATR_CAPITAL_ALLOCATION_PCT = float(os.getenv("MOMENTUM_ATR_CAPITAL_ALLOCATION_PCT", 0.40))
 
+# momentum_atr is the ONLY strategy authorized to place real broker orders
+# (user rule, 2026-09-07). Main strategy switched to paper-only 2026-09-03;
+# on its last live day it bought a real GOLDBEES.NS position that then sat
+# untracked by any live strategy until manually folded into momentum_atr's
+# ledger. Deliberately NOT an env var: an env var can be flipped on the
+# server with no git history and no review. Flipping this requires an
+# actual commit -- `git blame` always shows who authorized live main-strategy
+# trading and when. See main.py::cmd_run, checked before --live can do
+# anything, even before the broker connectivity audit.
+MAIN_STRATEGY_LIVE_TRADING_ENABLED = False
+
 # Observability/dashboard reporting layer (docs/60) — physically separate
 # SQLite file from every strategy DB above; read-only against trading.db
 # and momentum_atr.db, writes only land here. Never a source of truth for
