@@ -50,6 +50,7 @@ class OrderStatus(str, Enum):
     REJECTED   = "REJECTED"
     CANCELLED  = "CANCELLED"
     PARTIAL    = "PARTIAL"
+    UNKNOWN    = "UNKNOWN"  # status lookup itself failed -- distinct from broker-reported PENDING
 
 
 @dataclass

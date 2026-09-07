@@ -57,7 +57,11 @@ def _await_order_completion(broker: BaseBroker, order_id: str) -> Optional[Order
     res = None
     while elapsed < AWAIT_TIMEOUT_SEC:
         res = broker.get_order_status(order_id)
-        if res.status in (OrderStatus.COMPLETE, OrderStatus.REJECTED, OrderStatus.CANCELLED):
+        # UNKNOWN means the status lookup itself failed (e.g. order not
+        # found) -- broker will never resolve this, so stop polling instead
+        # of burning the full timeout window on a dead order_id.
+        if res.status in (OrderStatus.COMPLETE, OrderStatus.REJECTED,
+                          OrderStatus.CANCELLED, OrderStatus.UNKNOWN):
             return res
         time.sleep(AWAIT_POLL_SEC)
         elapsed += AWAIT_POLL_SEC
@@ -213,10 +217,28 @@ def _execute_buys(broker: BaseBroker, bought: Dict[str, int], reason: str,
     return spent
 
 
+def _broker_holds_at_least(broker: BaseBroker, symbol: str, qty: int) -> bool:
+    """Pre-flight check before firing a live SELL. DB thinking a position is
+    OPEN doesn't mean the broker still has the shares -- if they diverged
+    (e.g. a ghost position), a live sell attempt just burns an API call,
+    then times out or 404s trying to confirm an order the broker never
+    really backed. Cheaper and clearer to catch the mismatch up front and
+    skip, than to place-then-discover."""
+    held = {h.symbol: h.quantity for h in broker.get_holdings()}
+    return held.get(symbol, 0) >= qty
+
+
 def _execute_sell(broker: BaseBroker, pos: Position, reason: str, closes: Dict[str, float],
                    dry_run: bool, plan: list) -> Optional[float]:
     """Sells a full position, records the trade with real charges applied.
     Returns proceeds actually credited (only on confirmed full fill)."""
+    if not dry_run and not _broker_holds_at_least(broker, pos.symbol, pos.shares):
+        send_error_alert(
+            f"momentum_atr: SELL {pos.symbol} x{pos.shares} skipped -- broker does not "
+            f"hold enough shares (DB/broker mismatch, needs manual reconcile). Position "
+            f"left OPEN in DB, not touched."
+        )
+        return None
     res = _confirmed_fill(broker, "SELL", pos.symbol, pos.shares, dry_run, plan)
     if res is None:
         return None

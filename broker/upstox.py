@@ -358,9 +358,15 @@ class UpstoxBroker(BaseBroker):
             return self._parse_order_response(data)
         except Exception as e:
             logger.error("[Upstox] get_order_status(%s) failed: %s", order_id, e)
+            # Distinct from PENDING: a lookup failure (e.g. 404 -- order
+            # vanished from the book) means we genuinely don't know the
+            # order's fate, not that the broker is still working on it.
+            # Returning PENDING here made callers poll the full timeout
+            # window for an order that would never resolve.
             return OrderResult(
-                order_id=order_id, status=OrderStatus.PENDING,
+                order_id=order_id, status=OrderStatus.UNKNOWN,
                 symbol="", side=OrderSide.BUY, requested_qty=0,
+                rejection_reason=str(e),
             )
 
     def get_positions(self) -> List[LivePosition]:

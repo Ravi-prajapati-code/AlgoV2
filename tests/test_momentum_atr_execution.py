@@ -198,9 +198,17 @@ def momentum_atr_env(tmp_path, monkeypatch):
 
 
 def _seed_positions(repo, symbols, entry_price=100.0):
+    """Seeds OPEN positions in the DB and returns matching LivePositions,
+    for tests to hand to FakeBroker(holdings=...) -- run_daily now checks
+    broker holdings before selling, so a seeded DB position needs a
+    matching broker holding or the sell is (correctly) skipped."""
+    holdings = []
     for sym in symbols:
         repo.save_position(Position(symbol=sym, entry_date=TODAY - timedelta(days=5),
                                      entry_price=entry_price, shares=10, status="OPEN"))
+        holdings.append(LivePosition(symbol=sym, quantity=10, avg_price=entry_price,
+                                      ltp=entry_price, pnl=0.0, product="CNC"))
+    return holdings
 
 
 def test_initial_fill_establishes_top_n(momentum_atr_env):
@@ -228,13 +236,13 @@ def test_dry_run_makes_no_ledger_mutation(momentum_atr_env):
 
 def test_swap_rule_sells_loser_buys_winner(momentum_atr_env):
     execution, repo, _ = momentum_atr_env
-    _seed_positions(repo, ["A", "B", "C"])
+    holdings = _seed_positions(repo, ["A", "B", "C"])
     repo.update_state(cash=100.0, peak_equity=3200.0)  # ~= entry equity, well clear of kill-switch
 
     today_closes = {"A": 96.0, "B": 104.0, "C": 101.0, "D": 90.0}  # A -4%, B +4%
     _seed_ranking(repo, today_closes, ["B", "C", "A", "D"])
 
-    summary = execution.run_daily(FakeBroker(today_closes), TODAY)
+    summary = execution.run_daily(FakeBroker(today_closes, holdings=holdings), TODAY)
 
     syms_after = {p.symbol for p in repo.load_positions("OPEN")}
     assert "A" not in syms_after and "B" in syms_after
@@ -244,7 +252,7 @@ def test_swap_rule_sells_loser_buys_winner(momentum_atr_env):
 
 def test_rank_exit_sells_first_out_of_rank_and_reallocs(momentum_atr_env):
     execution, repo, _ = momentum_atr_env
-    _seed_positions(repo, ["A", "B", "C"])
+    holdings = _seed_positions(repo, ["A", "B", "C"])
     repo.update_state(cash=100.0, peak_equity=3200.0)
 
     today_closes = {"A": 100.5, "B": 100.5, "C": 100.5, "D": 100.5, "E": 100.5}
@@ -252,7 +260,7 @@ def test_rank_exit_sells_first_out_of_rank_and_reallocs(momentum_atr_env):
     # position with rank>3, matching engine.py's break-on-first-exit.
     _seed_ranking(repo, today_closes, ["A", "B", "D", "E", "C"])
 
-    summary = execution.run_daily(FakeBroker(today_closes), TODAY)
+    summary = execution.run_daily(FakeBroker(today_closes, holdings=holdings), TODAY)
 
     syms_after = {p.symbol for p in repo.load_positions("OPEN")}
     assert "C" not in syms_after
@@ -262,14 +270,14 @@ def test_rank_exit_sells_first_out_of_rank_and_reallocs(momentum_atr_env):
 
 def test_kill_switch_blocks_buys_but_not_sells(momentum_atr_env):
     execution, repo, sent = momentum_atr_env
-    _seed_positions(repo, ["A", "B", "C"])
+    holdings = _seed_positions(repo, ["A", "B", "C"])
     # peak_equity far above today's equity -> forces a >=25% drawdown trip
     repo.update_state(cash=0.0, peak_equity=10_000.0)
 
     today_closes = {"A": 96.0, "B": 104.0, "C": 101.0, "D": 90.0}
     _seed_ranking(repo, today_closes, ["B", "C", "A", "D"])
 
-    summary = execution.run_daily(FakeBroker(today_closes), TODAY)
+    summary = execution.run_daily(FakeBroker(today_closes, holdings=holdings), TODAY)
 
     assert summary["kill_switch_tripped"] is True
     types = [a["type"] for a in summary["actions"]]
