@@ -69,6 +69,57 @@ post-cutoff data, and asserts `can_open_new_trades()` allows trading given
 that peak. Confirmed to fail against the pre-fix code (`git stash` check):
 `peak_value == 96520.32` instead of `54950.15`.
 
+## Addendum (2026-09-07, same day): a second, deeper floor
+
+Deploying the fix above and re-verifying live on production surfaced a
+second, structurally identical bug in the same function. A duplicate real
+position (GOLDBEES.NS, 175 shares, folded into `momentum_atr.db` in a prior
+session but never removed from `trading.db`) was found and administratively
+closed out of `trading.db` via `db.repository.close_position_and_save_trade`
+(`exit_price == entry_price`, `net_pnl = 0` — pure bookkeeping correction,
+no fabricated P&L). Re-running the live verification immediately after
+showed `can_open_new_trades()` **still** blocked, at a worse 45%+
+"drawdown" — the duplicate was not the cause.
+
+Root cause: `portfolio/manager.py::_load_state()`'s no-broker (paper-mode)
+branch unconditionally ran `self.peak_value = self.initial_capital` before
+merging with snapshot history. `self.initial_capital` defaults to
+`config.settings.INITIAL_CAPITAL` (100,000) — a figure inherited from when
+main ran live against the *full* shared broker account, never re-baselined
+after the 2026-09-03 paper cutover. Every real paper-mode cron run passes
+`broker=None` (`runner/daily_runner.py`'s `live_mode` check), so this branch
+is the one actually executing in production, always. Since main's real
+isolated post-cutoff `strategy_value` has only ever been ~54,950 — nowhere
+near 100,000 — the unconditional floor permanently won the `max()` against
+real snapshot history, reproducing the exact same class of false-drawdown
+bug the first half of this fix addressed, from a second source.
+
+Fix: removed the unconditional `self.peak_value = self.initial_capital`
+assignment from both the no-broker branch and the broker-exception branch.
+`self.initial_capital` is now only used as a bootstrap fallback via the
+pre-existing `elif not hasattr(self, 'peak_value')` guard later in the same
+function — i.e. only on a genuine first-ever run with zero snapshot history,
+matching how the broker-connected (live) branch already behaved. Verified
+on production: `peak_value` now resolves to 54,950.15 (the real snapshot
+max), not 100,000.
+
+New regression test:
+`tests/test_portfolio.py::TestPeakValueExcludesPreLiveSharedCashHistory::
+test_peak_value_not_floored_by_stale_initial_capital` — seeds only clean
+post-cutoff snapshots (no contaminated history needed this time) with
+`initial_capital` left at its high default, asserts `peak_value` reflects
+the snapshot max, not the default. Confirmed to fail against the pre-fix
+code (`100000.0 != 54950.15`, via `git stash`) and pass with the fix.
+
+Lesson: a single-cause theory ("the cutoff filter fixes the peak") was
+under-verified until re-checked live end-to-end. Fixing the *history*
+input (`MAIN_STRATEGY_PAPER_SINCE`) was necessary but not sufficient — the
+*baseline* input (`initial_capital`) carried the same shared-account-era
+contamination and needed its own independent fix. Any future "peak/drawdown
+now correct" claim for main strategy must be verified against a live
+`can_open_new_trades()` call, not just the snapshot-filtering logic in
+isolation.
+
 ## Why this matters going forward
 
 Main strategy is paper-only, so no real capital was at risk from the block

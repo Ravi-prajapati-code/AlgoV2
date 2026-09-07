@@ -165,11 +165,24 @@ class PortfolioManager:
             except Exception as e:
                 logger.error(f"[Live] Failed to sync live data from broker: {e}")
                 self.cash = self._load_cash_from_db()
-                self.peak_value = self.initial_capital
         else:
             self.cash = self._load_cash_from_db()
-            self.peak_value = self.initial_capital
-            
+
+        # NOTE: peak_value is intentionally NOT set to self.initial_capital here
+        # (2026-09-07 finding #2, docs/63 addendum). self.initial_capital defaults
+        # to config.settings.INITIAL_CAPITAL (100,000) -- a number inherited from
+        # when main ran live against the FULL shared broker account. Since the
+        # 2026-09-03 paper cutover, main's own isolated strategy_value has never
+        # been anywhere near 100,000 (real post-cutoff snapshots: ~54,950). Every
+        # paper-mode run takes this exact branch (broker=None, see
+        # runner/daily_runner.py's live_mode check), so unconditionally flooring
+        # peak_value at the stale 100k figure fabricated a permanent ~45% false
+        # drawdown -- the second half of the same contamination bug fixed below
+        # via MAIN_STRATEGY_PAPER_SINCE, discovered only after the first half was
+        # deployed and can_open_new_trades() was still returning False. Let the
+        # snapshot-driven block below establish peak_value; its own elif fallback
+        # already covers the true first-ever-run/no-snapshots-yet case.
+
         # Only snapshots from MAIN_STRATEGY_PAPER_SINCE onward are economically
         # valid for this strategy's own peak/drawdown tracking. Before that
         # date main ran live sharing one real broker account with momentum_atr,

@@ -158,3 +158,43 @@ class TestPeakValueExcludesPreLiveSharedCashHistory:
 
         ok, reason = can_open_new_trades(0, [], 54_950.15, pm.peak_value)
         assert ok is True, reason
+
+    def test_peak_value_not_floored_by_stale_initial_capital(self, tmp_path, monkeypatch):
+        """2026-09-07 finding #2: even after the cutoff fix above, the no-broker
+        (paper-mode) branch of _load_state() unconditionally set
+        self.peak_value = self.initial_capital BEFORE merging with snapshot
+        history. self.initial_capital defaults to config.settings.INITIAL_CAPITAL
+        (100,000) -- inherited from when main ran live against the full shared
+        broker account. Every real paper-mode cron run passes broker=None (see
+        runner/daily_runner.py), so this floor was live: it fabricated a
+        permanent ~45% false drawdown against a 100k figure main's isolated
+        paper ledger has never actually held. Must never regress to flooring
+        peak_value at initial_capital when real post-cutoff snapshot history
+        already exists."""
+        from datetime import timedelta
+        from db import repository as repo
+        from db.models import PortfolioSnapshot
+        from config.settings import MAIN_STRATEGY_PAPER_SINCE
+        from portfolio.manager import PortfolioManager
+
+        db_path = str(tmp_path / "trading_test2.db")
+        monkeypatch.setattr(repo, "DB_PATH", db_path)
+        repo.init_db()
+
+        for d, val in zip(
+            [MAIN_STRATEGY_PAPER_SINCE, MAIN_STRATEGY_PAPER_SINCE + timedelta(days=1)],
+            [54_475.90, 54_950.15],
+        ):
+            repo.save_snapshot(PortfolioSnapshot(
+                date=d, cash=32_859.90, invested=0.0, total_value=val,
+                open_positions=0, strategy_value=val,
+            ))
+
+        # Default initial_capital (100,000) is far above any real snapshot --
+        # it must never win the peak.
+        pm = PortfolioManager(broker=None)
+
+        assert pm.peak_value == pytest.approx(54_950.15)
+
+        ok, reason = can_open_new_trades(0, [], 54_950.15, pm.peak_value)
+        assert ok is True, reason
