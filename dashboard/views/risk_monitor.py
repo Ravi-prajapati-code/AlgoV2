@@ -6,7 +6,14 @@ gate is portfolio/risk.py::can_open_new_trades() plus inline graduated
 size-cut logic in portfolio/manager.py, computed each run from
 self.peak_value (in-memory, never persisted). That peak is reconstructible
 read-only as max(portfolio_snapshots.strategy_value) ever recorded, so this
-page reproduces the same numbers without touching live code.
+page reproduces the same numbers without touching live code -- EXCEPT that
+reconstruction is only valid from MAIN_STRATEGY_PAPER_SINCE onward. Before
+that date main ran live sharing one real broker account with momentum_atr,
+and portfolio/manager.py:136 set cash from the broker's FULL shared balance
+-- so historical strategy_value swung on momentum_atr's own trades, not
+main's P&L (2026-09-07 finding). Including that period in the peak
+fabricates a permanent false "kill-switch active" (observed: 43% "drawdown"
+against a 2026-07-21 peak that predates the contamination window entirely).
 
 momentum_atr: a single binary threshold (MOMENTUM_ATR_DD_KILL_PCT), state
 directly persisted (state.kill_switch_tripped/peak_equity) and read via
@@ -24,6 +31,7 @@ from config.settings import (
     DRAWDOWN_KILL_SWITCH_PCT,
     DRAWDOWN_REDUCE_SIZE_PCT,
     DRAWDOWN_REDUCE_TIER2_MULT,
+    MAIN_STRATEGY_PAPER_SINCE,
     MOMENTUM_ATR_DD_KILL_PCT,
 )
 
@@ -31,7 +39,7 @@ from config.settings import (
 def _main_risk_state():
     from db.repository import load_snapshots
 
-    snaps = load_snapshots()
+    snaps = [s for s in load_snapshots() if s.date >= MAIN_STRATEGY_PAPER_SINCE]
     if not snaps:
         return None
     peak = max(s.strategy_value for s in snaps)

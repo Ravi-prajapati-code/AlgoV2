@@ -12,6 +12,7 @@ Parameter hierarchy (highest to lowest priority):
 import os
 import yaml
 import logging
+from datetime import date
 from pathlib import Path
 from dotenv import load_dotenv
 
@@ -304,6 +305,21 @@ MOMENTUM_ATR_CAPITAL_ALLOCATION_PCT = float(os.getenv("MOMENTUM_ATR_CAPITAL_ALLO
 # trading and when. See main.py::cmd_run, checked before --live can do
 # anything, even before the broker connectivity audit.
 MAIN_STRATEGY_LIVE_TRADING_ENABLED = False
+
+# First date main's strategy_value snapshots are economically valid. Before
+# this, portfolio/manager.py:136 set self.cash from broker.get_available_cash()
+# -- the FULL shared real account balance while main and momentum_atr traded
+# out of one Upstox account -- so every momentum_atr buy/sell swung main's
+# reported cash and hence its strategy_value, unrelated to main's own P&L
+# (single-day swings like Rs.12k<->Rs.59k in the 2026-08 history, none of it
+# real main-strategy performance). docs/59's 2026-08-10 split scoped
+# *positions* by origin but never scoped *cash* -- this constant is the
+# actual fix's anchor, not that split. From this date, main is paper-only
+# and self.cash comes from its own isolated DB ledger (portfolio/manager.py
+# else-branch), so strategy_value is finally a clean, comparable series.
+# Any peak/drawdown/kill-switch reasoning over strategy_value MUST exclude
+# snapshots before this date. See dashboard/views/risk_monitor.py.
+MAIN_STRATEGY_PAPER_SINCE = date(2026, 9, 3)
 
 # Observability/dashboard reporting layer (docs/60) — physically separate
 # SQLite file from every strategy DB above; read-only against trading.db
