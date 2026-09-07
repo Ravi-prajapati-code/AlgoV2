@@ -26,6 +26,7 @@ from config.settings import (
     REPLACE_MIN_NEW_RS, REPLACE_MAX_HELD_RS, REPLACE_MIN_GAP, MIN_PROFIT_SOFT,
     MAX_NEW_TRADES_PER_DAY, DRAWDOWN_KILL_SWITCH_PCT, DD_THROTTLE_DISABLED_ENABLED,
     REGIME_SIZE_MULT_BEAR, REGIME_SIZE_MULT_BULL, REGIME_SIZE_MULT_STRONG_BULL,
+    MAIN_STRATEGY_PAPER_SINCE,
 )
 from strategy.defensive_portfolio import (
     ROTATION_ENABLED, ROTATE_EXIT_RS, ROTATE_INTO_RS, ROTATE_MIN_GAP,
@@ -169,7 +170,17 @@ class PortfolioManager:
             self.cash = self._load_cash_from_db()
             self.peak_value = self.initial_capital
             
-        snapshots = repo.load_snapshots()
+        # Only snapshots from MAIN_STRATEGY_PAPER_SINCE onward are economically
+        # valid for this strategy's own peak/drawdown tracking. Before that
+        # date main ran live sharing one real broker account with momentum_atr,
+        # and self.cash above (live branch) was the broker's FULL shared
+        # balance -- so strategy_value swung on momentum_atr's own trades, not
+        # main's P&L (2026-09-07 finding: this exact bug had can_open_new_trades
+        # silently returning False every run, 43% false drawdown against a
+        # stale 2026-07-21 peak that predates the contamination window
+        # entirely). Never remove this filter without re-verifying cash is
+        # fully isolated for the whole history being included.
+        snapshots = [s for s in repo.load_snapshots() if s.date >= MAIN_STRATEGY_PAPER_SINCE]
         if snapshots:
             # Only update peak_value if it's higher than what we have
             # In live mode, if snapshots were empty, peak_value was set to live_pv above

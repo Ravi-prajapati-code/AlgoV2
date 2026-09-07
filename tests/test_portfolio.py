@@ -107,3 +107,54 @@ class TestRiskControls:
     def test_within_limits_allowed(self):
         ok, _ = can_open_new_trades(1, [], 75_000, 75_000)
         assert ok is True
+
+
+class TestPeakValueExcludesPreLiveSharedCashHistory:
+    """2026-09-07 finding: PortfolioManager._load_state() computed peak_value
+    as max(strategy_value) over ALL snapshot history, with no cutoff. Before
+    MAIN_STRATEGY_PAPER_SINCE, main ran live sharing one real broker account
+    with momentum_atr, and self.cash was the broker's FULL shared balance --
+    so historical strategy_value swung on momentum_atr's own trades, not
+    main's P&L. That contaminated peak fed straight into
+    portfolio/risk.py::can_open_new_trades(), which was found returning
+    False on every real run (a permanent false 43% "drawdown" against a
+    stale pre-cutoff peak). Must never regress to reading unfiltered
+    history again."""
+
+    def test_peak_value_ignores_snapshots_before_cutoff(self, tmp_path, monkeypatch):
+        from datetime import timedelta
+        from db import repository as repo
+        from db.models import PortfolioSnapshot
+        from config.settings import MAIN_STRATEGY_PAPER_SINCE
+        from portfolio.manager import PortfolioManager
+
+        db_path = str(tmp_path / "trading_test.db")
+        monkeypatch.setattr(repo, "DB_PATH", db_path)
+        repo.init_db()
+
+        # Contaminated pre-cutoff history: one huge spurious spike, far above
+        # anything the clean post-cutoff series reaches.
+        pre_cutoff_dates = [MAIN_STRATEGY_PAPER_SINCE - timedelta(days=d) for d in (5, 3, 1)]
+        for d, val in zip(pre_cutoff_dates, [30_000.0, 96_520.32, 12_295.0]):
+            repo.save_snapshot(PortfolioSnapshot(
+                date=d, cash=val, invested=0.0, total_value=val,
+                open_positions=0, strategy_value=val,
+            ))
+
+        # Clean post-cutoff history: flat around 55k, never near the
+        # pre-cutoff spike.
+        post_cutoff_dates = [MAIN_STRATEGY_PAPER_SINCE + timedelta(days=d) for d in (0, 1)]
+        for d, val in zip(post_cutoff_dates, [54_475.90, 54_950.15]):
+            repo.save_snapshot(PortfolioSnapshot(
+                date=d, cash=val, invested=0.0, total_value=val,
+                open_positions=0, strategy_value=val,
+            ))
+
+        # Below every candidate peak so the assertion isolates which
+        # snapshot-derived value wins, not initial_capital's own floor.
+        pm = PortfolioManager(initial_capital=1_000.0, broker=None)
+
+        assert pm.peak_value == pytest.approx(54_950.15)
+
+        ok, reason = can_open_new_trades(0, [], 54_950.15, pm.peak_value)
+        assert ok is True, reason

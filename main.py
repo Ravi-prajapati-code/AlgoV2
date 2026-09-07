@@ -333,9 +333,16 @@ def cmd_risk_report(_args):
     from risk.manager import RiskManager
     from config.settings import INITIAL_CAPITAL
     from data.fetcher import fetch_symbol
+    from config.settings import MAIN_STRATEGY_PAPER_SINCE
 
     positions  = repo.load_positions(status="OPEN")
-    snapshots  = repo.load_snapshots()
+    # Pre-MAIN_STRATEGY_PAPER_SINCE snapshots are contaminated: main ran live
+    # sharing one real broker account with momentum_atr, so cash/total_value
+    # swung on momentum_atr's own trades, not main's P&L (2026-09-07 finding
+    # -- see portfolio/manager.py._load_state for the same fix on the real
+    # live gate). Excluding them here too so this report can't show the same
+    # false drawdown/kill-switch reading.
+    snapshots  = [s for s in repo.load_snapshots() if s.date >= MAIN_STRATEGY_PAPER_SINCE]
 
     # Get latest prices for current valuation
     prices = {}
