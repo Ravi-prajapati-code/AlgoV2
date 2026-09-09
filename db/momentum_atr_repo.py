@@ -145,6 +145,35 @@ def close_position_and_save_trade(symbol: str, t: Trade):
         conn.close()
 
 
+def reduce_position_and_save_trade(symbol: str, remaining_shares: int, t: Trade):
+    """Atomically reduce an OPEN position's share count and record the
+    removed portion as its own trade -- mirrors db/repository.py's
+    reduce_position_and_save_trade (MAIN's equivalent). Position row stays
+    OPEN with entry_price/entry_date/entry_order_id unchanged since only
+    share count changed; either both writes commit or neither does."""
+    conn = get_connection()
+    try:
+        with conn:
+            cur = conn.execute(
+                "UPDATE positions SET shares = ? WHERE symbol = ? AND status = 'OPEN'",
+                (remaining_shares, symbol)
+            )
+            if cur.rowcount == 0:
+                raise ValueError(f"No OPEN position for {symbol} to reduce")
+            conn.execute(
+                """INSERT INTO trades
+                   (symbol, entry_date, exit_date, entry_price, exit_price, shares,
+                    gross_pnl, charges, net_pnl, exit_reason, exit_order_id)
+                   VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)""",
+                (t.symbol, t.entry_date.strftime("%Y-%m-%d"),
+                 t.exit_date.strftime("%Y-%m-%d") if t.exit_date else None,
+                 t.entry_price, t.exit_price, t.shares, t.gross_pnl, t.charges,
+                 t.net_pnl, t.exit_reason, t.exit_order_id)
+            )
+    finally:
+        conn.close()
+
+
 def load_trades() -> List[Trade]:
     conn = get_connection()
     rows = conn.execute("SELECT * FROM trades ORDER BY id DESC").fetchall()
