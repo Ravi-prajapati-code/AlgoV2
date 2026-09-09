@@ -45,7 +45,7 @@ logging.basicConfig(
 logger = logging.getLogger("reconciler")
 
 import requests
-from config.settings import TELEGRAM_BOT_TOKEN, TELEGRAM_CHAT_ID
+from config.settings import TELEGRAM_BOT_TOKEN, TELEGRAM_CHAT_ID, MAIN_STRATEGY_PAPER_SINCE
 from reconciliation.classifier import Classification, classify
 
 
@@ -119,9 +119,21 @@ def log_classifications(now_str: str, broker_positions, db_positions, atr_positi
     catch broadly and treat this as best-effort."""
     from db import reporting_repo as rrepo
 
-    main_qty, atr_qty, broker_qty = {}, {}, {}
+    # MAIN positions opened on/after MAIN_STRATEGY_PAPER_SINCE are simulated
+    # -- never reached the broker -- and must not count toward ownership
+    # math, or a paper entry falsely reads as DUPLICATE_OWNERSHIP against a
+    # real momentum_atr holding that already matches the broker exactly
+    # (GOLDBEES.NS). A position dated before the cutover stays counted
+    # regardless of MAIN's current live-trading flag (ASIANENE.NS, manual
+    # entry pre-cutover, still real) -- per-position date filter, not a
+    # flag check. See the identical filter + rationale in
+    # scripts/observability_snapshot.py::snapshot_positions().
+    main_qty, main_paper_qty, atr_qty, broker_qty = {}, {}, {}, {}
     for p in db_positions:
-        main_qty[p.symbol] = main_qty.get(p.symbol, 0) + p.shares
+        if p.entry_date >= MAIN_STRATEGY_PAPER_SINCE:
+            main_paper_qty[p.symbol] = main_paper_qty.get(p.symbol, 0) + p.shares
+        else:
+            main_qty[p.symbol] = main_qty.get(p.symbol, 0) + p.shares
     for p in atr_positions:
         atr_qty[p.symbol] = atr_qty.get(p.symbol, 0) + p.shares
     for p in broker_positions:
@@ -137,6 +149,8 @@ def log_classifications(now_str: str, broker_positions, db_positions, atr_positi
             "manual_evidence": _manual_evidence_for_symbol(sym),
             "prior_record_exists": _prior_record_exists_for_symbol(sym),
         }
+        if sym in main_paper_qty:
+            evidence["main_paper_qty"] = main_paper_qty[sym]
         cls, ev = classify(sym, m, a, b, evidence)
         if cls != Classification.MATCH:
             non_match.append((sym, m, a, b, cls, ev))

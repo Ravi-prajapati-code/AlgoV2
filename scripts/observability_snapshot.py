@@ -31,6 +31,7 @@ logger = logging.getLogger("observability_snapshot")
 
 from config.settings import (
     DB_PATH, MOMENTUM_ATR_DB_PATH, MOMENTUM_ATR_CAPITAL_ALLOCATION_PCT,
+    MAIN_STRATEGY_PAPER_SINCE,
 )
 from db import reporting_repo as rrepo
 from reconciliation.classifier import Classification, classify
@@ -110,10 +111,26 @@ def snapshot_positions(ts: str, main_positions, atr_positions, broker_snap: dict
     shapes classify conservatively (QUANTITY_MISMATCH not
     MANUAL_BROKER_POSITION, UNKNOWN_POSITION not BROKER_ONLY_POSITION).
     scripts/reconcile_positions.py is the one path with an origin-recovery
-    heuristic and passes real evidence."""
+    heuristic and passes real evidence.
+
+    MAIN positions opened on/after MAIN_STRATEGY_PAPER_SINCE are simulated
+    -- they never reach the broker, so they must not count toward
+    ownership/conflict math (GOLDBEES.NS: a 2026-09-07 paper entry was
+    classifying as DUPLICATE_OWNERSHIP against momentum_atr's real 175 sh,
+    even though momentum_atr's holding alone already matched the broker
+    exactly). A position dated before the cutover is real regardless of
+    MAIN's *current* live-trading flag (ASIANENE.NS: manual entry
+    2026-08-27, predates the 2026-09-03 cutover, must stay counted) -- so
+    this is a per-position date filter, not a flag check. Paper qty is
+    still passed through as evidence for audit visibility, just excluded
+    from the classifier's quantity math."""
     main_qty = {}
+    main_paper_qty = {}
     for p in main_positions:
-        main_qty[p.symbol] = main_qty.get(p.symbol, 0) + p.shares
+        if p.entry_date >= MAIN_STRATEGY_PAPER_SINCE:
+            main_paper_qty[p.symbol] = main_paper_qty.get(p.symbol, 0) + p.shares
+        else:
+            main_qty[p.symbol] = main_qty.get(p.symbol, 0) + p.shares
     atr_qty = {}
     for p in atr_positions:
         atr_qty[p.symbol] = atr_qty.get(p.symbol, 0) + p.shares
@@ -124,7 +141,8 @@ def snapshot_positions(ts: str, main_positions, atr_positions, broker_snap: dict
         m = main_qty.get(sym, 0)
         a = atr_qty.get(sym, 0)
         b = broker_snap["qty_by_symbol"].get(sym, 0)
-        cls, ev = classify(sym, m, a, b)
+        evidence = {"main_paper_qty": main_paper_qty[sym]} if sym in main_paper_qty else None
+        cls, ev = classify(sym, m, a, b, evidence)
         rrepo.save_strategy_position_snapshot(
             ts, sym, broker_qty=b, main_qty=m, momentum_atr_qty=a,
             classification=cls.value, evidence=ev,

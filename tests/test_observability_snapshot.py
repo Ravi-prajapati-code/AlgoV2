@@ -31,8 +31,13 @@ def snap(rrepo, monkeypatch):
     return snap_mod
 
 
-def _pos(symbol, shares, entry_price=100.0):
-    return SimpleNamespace(symbol=symbol, shares=shares, entry_price=entry_price)
+def _pos(symbol, shares, entry_price=100.0, entry_date=None):
+    # Default predates MAIN_STRATEGY_PAPER_SINCE (2026-09-03) so existing
+    # callers keep meaning "real" MAIN position unless a test explicitly
+    # passes a post-cutover entry_date.
+    from datetime import date
+    return SimpleNamespace(symbol=symbol, shares=shares, entry_price=entry_price,
+                            entry_date=entry_date or date(2026, 1, 1))
 
 
 def _broker_snap(qty_by_symbol=None, ltp_by_symbol=None, cash=0.0, total_equity=0.0):
@@ -68,6 +73,40 @@ def test_snapshot_positions_collision_when_qtys_mismatch(snap):
 
     saved = snap.rrepo.load_position_snapshots_for_ts("t1")
     assert saved[0]["collision_flag"] == 1
+
+
+def test_snapshot_positions_excludes_post_cutover_main_paper_qty(snap):
+    """GOLDBEES.NS-shaped: a MAIN position opened after
+    MAIN_STRATEGY_PAPER_SINCE is simulated and must not count toward
+    ownership math -- momentum_atr's real 175 sh already matches the
+    broker exactly, so this must classify MATCH, not DUPLICATE_OWNERSHIP,
+    even though MAIN's own ledger shows 102 shares of the same symbol."""
+    from datetime import date
+    main_positions = [_pos("GOLDBEES.NS", 102, entry_date=date(2026, 9, 7))]  # after cutover
+    atr_positions = [_pos("GOLDBEES.NS", 175)]
+    broker = _broker_snap(qty_by_symbol={"GOLDBEES.NS": 175})
+
+    rows = snap.snapshot_positions("t1", main_positions, atr_positions, broker)
+
+    assert rows == [("GOLDBEES.NS", 0, 175, 175, Classification.MATCH)]
+    saved = snap.rrepo.load_position_snapshots_for_ts("t1")
+    assert saved[0]["classification"] == Classification.MATCH.value
+    assert '"main_paper_qty": 102' in saved[0]["evidence_json"]
+
+
+def test_snapshot_positions_keeps_pre_cutover_main_qty(snap):
+    """ASIANENE.NS-shaped: a MAIN position opened before
+    MAIN_STRATEGY_PAPER_SINCE is real regardless of MAIN's current
+    live-trading flag, and must stay counted -- a blanket 'ignore MAIN
+    whenever paper mode is on today' check would wrongly blind this."""
+    from datetime import date
+    main_positions = [_pos("ASIANENE.NS", 8, entry_date=date(2026, 8, 27))]  # before cutover
+    atr_positions = [_pos("ASIANENE.NS", 8)]
+    broker = _broker_snap(qty_by_symbol={})
+
+    rows = snap.snapshot_positions("t1", main_positions, atr_positions, broker)
+
+    assert rows == [("ASIANENE.NS", 8, 8, 0, Classification.GHOST_DB_POSITION)]
 
 
 def test_snapshot_positions_covers_broker_only_symbol(snap):
