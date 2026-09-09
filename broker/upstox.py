@@ -458,6 +458,52 @@ class UpstoxBroker(BaseBroker):
             logger.error("[Upstox] get_available_cash() failed: %s", e)
             return 0.0
 
+    def get_available_cash_or_none(self) -> Optional[float]:
+        """Same call as get_available_cash(), but returns None on failure
+        instead of 0.0 -- callers that need to distinguish "API failed" from
+        "genuinely zero cash" (e.g. momentum_atr's BUY sizing) must use this,
+        not get_available_cash()."""
+        try:
+            resp = self._session.get(
+                f"{self._base_url}/user/get-funds-and-margin",
+                headers=self._headers,
+                timeout=10,
+            )
+            resp.raise_for_status()
+            data = resp.json().get("data", {})
+            equity = data.get("equity", {})
+            return float(equity.get("available_margin", 0))
+        except Exception as e:
+            logger.error("[Upstox] get_available_cash_or_none() failed: %s", e)
+            return None
+
+    def get_holdings_or_none(self) -> Optional[List[LivePosition]]:
+        """Same call as get_holdings(), but returns None on failure instead
+        of []. See get_available_cash_or_none()."""
+        try:
+            resp = self._session.get(
+                f"{self._base_url}/portfolio/long-term-holdings",
+                headers=self._headers,
+                timeout=10,
+            )
+            resp.raise_for_status()
+            data = resp.json().get("data", [])
+            return [
+                LivePosition(
+                    symbol=pos["tradingsymbol"] + ".NS",
+                    quantity=int(pos.get("quantity", 0)),
+                    avg_price=float(pos.get("average_price", 0)),
+                    ltp=float(pos.get("last_price", 0)),
+                    pnl=float(pos.get("pnl", 0)),
+                    product="CNC",
+                )
+                for pos in data
+                if int(pos.get("quantity", 0)) > 0
+            ]
+        except Exception as e:
+            logger.error("[Upstox] get_holdings_or_none() failed: %s", e)
+            return None
+
     def get_ltp(self, symbol: str) -> float:
         """Real-time last-traded-price via Upstox v2 /market-quote/ltp.
         Used by momentum_atr's sizing math so the price used to compute

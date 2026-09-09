@@ -158,12 +158,15 @@ def _live_prices(broker: BaseBroker, symbols: List[str], fallback: Dict[str, flo
     return prices
 
 
-def _real_total_account_equity(broker: BaseBroker) -> float:
+def _real_total_account_equity(broker: BaseBroker) -> Optional[float]:
     """Real cash + market value of EVERY holding on the shared Upstox account
     -- both this strategy's and the main strategy's positions together, since
-    the broker has no concept of per-strategy attribution."""
-    cash = broker.get_available_cash()
-    holdings = broker.get_holdings()
+    the broker has no concept of per-strategy attribution. None means the
+    broker read failed -- callers must fail closed, never treat this as 0."""
+    cash = broker.get_available_cash_or_none()
+    holdings = broker.get_holdings_or_none()
+    if cash is None or holdings is None:
+        return None
     invested = sum(h.quantity * h.ltp for h in holdings if h.quantity > 0)
     return cash + invested
 
@@ -176,13 +179,41 @@ def _atr_invested_value(closes: Dict[str, float]) -> float:
 
 
 def _get_effective_cash(broker: BaseBroker, internal_cash: float, atr_invested_value: float) -> float:
-    real_cash = broker.get_available_cash()
-    if internal_cash > 0 and real_cash < internal_cash * MIN_REAL_CASH_RATIO:
+    """Returns the real BUY budget for this cycle. 0.0 always means "do not
+    buy" -- callers cannot distinguish that from genuine zero cash here, but
+    every 0.0-forcing branch below fires its own distinctly-worded alert, so
+    the reason is never silent, only the return type is."""
+    real_cash = broker.get_available_cash_or_none()
+    if real_cash is None:
+        send_error_alert(
+            "momentum_atr: BROKER_CASH_UNAVAILABLE -- get_available_cash() failed, "
+            "blocking BUYs this cycle rather than trading on a fabricated Rs.0 balance."
+        )
+        return 0.0
+
+    if internal_cash <= 0:
+        send_error_alert(
+            f"momentum_atr: INTERNAL_CASH_NEGATIVE -- internal ledger cash is "
+            f"Rs.{internal_cash:,.2f} (broker actually reports Rs.{real_cash:,.2f} available). "
+            f"Internal ledger, not broker cash, is capping the BUY budget at Rs.0 this cycle -- "
+            f"this is not a broker-capital shortage, it is the internal ledger absorbing prior "
+            f"realized losses. See docs/66. Requires a deliberate LIVE_CASH_REBASELINE, not an "
+            f"automatic correction."
+        )
+    elif real_cash < internal_cash * MIN_REAL_CASH_RATIO:
         send_error_alert(
             f"momentum_atr: broker cash Rs.{real_cash:,.0f} is <50% of internal ledger cash "
             f"Rs.{internal_cash:,.0f} -- possible capital collision with the other live strategy."
         )
+
     total_equity = _real_total_account_equity(broker)
+    if total_equity is None:
+        send_error_alert(
+            "momentum_atr: BROKER_DATA_UNAVAILABLE -- get_holdings() failed while computing "
+            "total account equity, blocking BUYs this cycle."
+        )
+        return 0.0
+
     allocation_cap = total_equity * MOMENTUM_ATR_CAPITAL_ALLOCATION_PCT
     headroom = max(0.0, allocation_cap - atr_invested_value)
     return min(internal_cash, real_cash, headroom)
@@ -288,7 +319,15 @@ def run_daily(broker: BaseBroker, today: _date, dry_run: bool = False) -> dict:
         # baseline and this run's own cash reflect the real shared account,
         # not a guess. Safe to do exactly once, only while fully flat --
         # never touches state once a trade exists.
-        bootstrap_cap = _real_total_account_equity(broker) * MOMENTUM_ATR_CAPITAL_ALLOCATION_PCT
+        total_equity = _real_total_account_equity(broker)
+        if total_equity is None:
+            send_error_alert(
+                "momentum_atr: BROKER_DATA_UNAVAILABLE -- cannot bootstrap initial capital "
+                "from a failed broker read, aborting run rather than seeding cash/peak_equity "
+                "from a fabricated Rs.0."
+            )
+            return {"aborted": True, "reason": "BROKER_DATA_UNAVAILABLE_bootstrap"}
+        bootstrap_cap = total_equity * MOMENTUM_ATR_CAPITAL_ALLOCATION_PCT
         repo.update_state(cash=bootstrap_cap, peak_equity=bootstrap_cap)
         state = repo.get_state()
 

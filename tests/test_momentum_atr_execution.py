@@ -360,6 +360,94 @@ def test_first_run_bootstraps_capital_from_real_account(momentum_atr_env, monkey
     assert state.peak_equity == pytest.approx(28_000.0)  # 0.40 * (60k cash + 10k other-holding)
 
 
+class BrokerReadFailure(FakeBroker):
+    """Simulates a real Upstox API failure -- fail_cash/fail_holdings make
+    the *_or_none() reads return None, matching UpstoxBroker's real failure
+    behavior (never 0.0/[])."""
+
+    def __init__(self, *args, fail_cash=False, fail_holdings=False, **kwargs):
+        super().__init__(*args, **kwargs)
+        self.fail_cash = fail_cash
+        self.fail_holdings = fail_holdings
+
+    def get_available_cash_or_none(self):
+        return None if self.fail_cash else self.get_available_cash()
+
+    def get_holdings_or_none(self):
+        return None if self.fail_holdings else self.get_holdings()
+
+
+def test_broker_cash_unavailable_blocks_buys_not_zero_cash(momentum_atr_env):
+    """A broker API failure must block BUYs with a distinct alert, not be
+    silently indistinguishable from a real Rs.0 cash balance."""
+    execution, repo, sent = momentum_atr_env
+    broker = BrokerReadFailure({}, cash=1_000_000, fail_cash=True)
+
+    budget = execution._get_effective_cash(broker, 50_000.0, 0.0)
+
+    assert budget == 0.0
+    assert any("BROKER_CASH_UNAVAILABLE" in msg for kind, msg in sent if kind == "error")
+
+
+def test_broker_holdings_unavailable_blocks_buys(momentum_atr_env):
+    """A get_holdings() failure (equity calc dependency) must also block
+    BUYs with a distinct alert rather than computing equity off missing data."""
+    execution, repo, sent = momentum_atr_env
+    broker = BrokerReadFailure({}, cash=1_000_000, fail_holdings=True)
+
+    budget = execution._get_effective_cash(broker, 50_000.0, 0.0)
+
+    assert budget == 0.0
+    assert any("BROKER_DATA_UNAVAILABLE" in msg for kind, msg in sent if kind == "error")
+
+
+def test_bootstrap_aborts_on_broker_failure_instead_of_seeding_zero(momentum_atr_env):
+    """First-ever run with a failed broker read must abort, not silently
+    bootstrap cash/peak_equity to Rs.0 (which would falsely trip the kill
+    switch and/or permanently poison peak_equity with a fabricated number)."""
+    execution, repo, sent = momentum_atr_env
+    closes = {"A": 100.0, "B": 200.0, "C": 50.0}
+    _seed_ranking(repo, closes, ["A", "B", "C"])
+    broker = BrokerReadFailure(closes, cash=1_000_000, fail_cash=True)
+    placeholder_cash = repo.get_state().cash
+
+    result = execution.run_daily(broker, TODAY)
+
+    assert result.get("aborted") is True
+    assert repo.get_state().cash == placeholder_cash  # untouched, not zeroed
+    assert any("BROKER_DATA_UNAVAILABLE" in msg for kind, msg in sent if kind == "error")
+
+
+def test_negative_internal_cash_always_alerts(momentum_atr_env, monkeypatch):
+    """MIN_REAL_CASH_RATIO's check only ever fired for internal_cash > 0 --
+    a negative internal ledger (this repo's actual live state post docs/66)
+    must alert explicitly instead of being silently invisible."""
+    execution, repo, sent = momentum_atr_env
+    closes = {"A": 100.0, "B": 200.0, "C": 50.0}
+    _seed_ranking(repo, closes, ["A", "B", "C"])
+    repo.update_state(cash=-5000.0, peak_equity=100_000.0)
+    broker = FakeBroker(closes, cash=1_000_000)
+
+    budget = execution._get_effective_cash(broker, -5000.0, 0.0)
+
+    assert budget <= 0.0  # negative internal cash still caps the budget, blocking BUYs
+    assert any("INTERNAL_CASH_NEGATIVE" in msg for kind, msg in sent if kind == "error")
+    assert any("-5,000.00" in msg or "-5,000" in msg for kind, msg in sent if kind == "error")
+
+
+def test_positive_internal_cash_healthy_broker_no_spurious_alert(momentum_atr_env):
+    """Happy path: positive internal cash, broker cash well above the 50%
+    floor -- must not trigger either the ratio alert or the new negative-cash
+    alert."""
+    execution, repo, sent = momentum_atr_env
+    broker = FakeBroker({}, cash=1_000_000)
+
+    budget = execution._get_effective_cash(broker, 50_000.0, 0.0)
+
+    assert budget > 0.0
+    assert not any(kind == "error" for kind, _ in sent)
+
+
 def test_run_daily_aborts_when_no_precomputed_ranking(momentum_atr_env):
     """No daily_ranking row for today means precompute cron didn't run/failed.
     run_daily must abort loud, not fall back to scoring itself live (defeats

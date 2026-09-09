@@ -150,6 +150,28 @@ class BaseBroker(ABC):
         """Return available cash balance for trading."""
         ...
 
+    def get_available_cash_or_none(self) -> Optional[float]:
+        """Same as get_available_cash(), but None means "API call failed,
+        do not trust this number" instead of being indistinguishable from a
+        genuine zero balance. Default just forwards to get_available_cash()
+        (correct for brokers like PaperBroker that never fail); UpstoxBroker
+        overrides this to surface real API failures instead of swallowing
+        them into 0.0."""
+        return self.get_available_cash()
+
+    def get_holdings_or_none(self) -> Optional[List[LivePosition]]:
+        """Same as get_holdings(), but None means "API call failed" instead
+        of being indistinguishable from genuinely zero holdings. get_holdings()
+        itself is not part of this ABC's interface (only UpstoxBroker/test
+        doubles define it, for the long-term-holdings endpoint specifically)
+        -- default forwards to it via getattr when present, else falls back
+        to get_positions() (PaperBroker has no separate holdings concept).
+        UpstoxBroker overrides this directly to surface real API failures."""
+        holdings_fn = getattr(self, "get_holdings", None)
+        if holdings_fn is not None:
+            return holdings_fn()
+        return self.get_positions()
+
     def get_ltp(self, symbol: str) -> float:
         """Real-time last-traded-price for one symbol, used to size an
         order against the current price instead of a stale prior-close.

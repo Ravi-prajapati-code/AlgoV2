@@ -167,3 +167,64 @@ user's decision intended. This should be confirmed at that time.
 - M1's `observability_snapshot.py` cron deployment is still open (docs/65)
   — until it's live, the next drift like this won't be caught until another
   manual scan.
+
+## Addendum (2026-09-09): idle-cash investigation and two broker-safety bugs
+
+Same day, the user asked why ₹38,482.92 of real Upstox cash sat unused
+despite `MOMENTUM_ATR_CAPITAL_ALLOCATION_PCT=1.0`. Root cause: this
+correction (above) drove `state.cash` — momentum_atr's internal ledger, used
+by `_get_effective_cash()`'s `min(internal_cash, real_cash, headroom)` — to
+**−₹3,997.73**. `min()` floors the BUY budget at that negative number
+regardless of real broker cash. This is the internal ledger correctly
+absorbing today's ₹21,181.34 write-off, not a bug in the correction — but it
+surfaced two real, independent bugs while investigating:
+
+1. `UpstoxBroker.get_available_cash()` / `get_holdings()` silently return
+   `0.0`/`[]` on any API exception — indistinguishable from a genuine zero
+   balance. `main.py` already had a comment acknowledging this exact gap
+   elsewhere, worked around locally rather than fixed at the source.
+2. The existing `MIN_REAL_CASH_RATIO` sanity check
+   (`momentum_atr/execution.py`) only evaluates `if internal_cash > 0` — a
+   negative internal cash, like the one this correction produced, has never
+   fired an alert.
+
+**Fixed, narrowly scoped to momentum_atr** (not a `BaseBroker`-wide
+refactor, to avoid touching MAIN's dormant paper path, `runner/
+daily_runner.py`, GTT monitoring, and reporting scripts that all call the
+existing `get_available_cash()`/`get_holdings()`/`get_positions()` and must
+keep their current behavior unchanged):
+
+- `broker/base.py` — additive `get_available_cash_or_none()` /
+  `get_holdings_or_none()` on `BaseBroker`, default forwards to the existing
+  methods (correct for `PaperBroker`, which never fails).
+- `broker/upstox.py` — `UpstoxBroker` overrides both to return `None` on
+  failure instead of `0.0`/`[]`.
+- `momentum_atr/execution.py` — `_real_total_account_equity()` and
+  `_get_effective_cash()` now use the `_or_none` variants. `None` from
+  either blocks BUYs (`BROKER_CASH_UNAVAILABLE` / `BROKER_DATA_UNAVAILABLE`,
+  distinct alerts) instead of computing off missing data. The one-time
+  bootstrap path (`run_daily()`, first-ever run) now aborts rather than
+  seeding `cash`/`peak_equity` from a broker failure. `internal_cash <= 0`
+  now always alerts (`INTERNAL_CASH_NEGATIVE`), showing both the internal
+  and real broker cash side by side, independent of the pre-existing ratio
+  check.
+
+**Deliberately not done in this pass**: no change to `state.cash`'s value.
+Rebaselining the internal ledger toward real broker cash (a
+`LIVE_CASH_REBASELINE`-style cutover) was requested by the user in the same
+session but is **sequenced after** confirming the kill switch trips at the
+next scheduled run (2026-09-10 ~09:17 IST, per the follow-up above) —
+raising `state.cash` before that run would raise the `equity` fed into
+`check_kill_switch()`'s `peak = max(peak, equity)`, very likely setting a
+new higher peak and suppressing the ~46% drawdown trip the user explicitly
+asked to let happen. Flagged to the user; not implemented pending that
+confirmation and an explicit decision on the rebaseline policy itself.
+
+Tests: `tests/test_momentum_atr_execution.py` — 6 new (broker-cash-
+unavailable blocks BUY, broker-holdings-unavailable blocks BUY, bootstrap
+aborts on broker failure rather than seeding Rs.0, negative-internal-cash
+always alerts with both figures, healthy-path has no spurious alert, plus
+the two pre-existing allocation-cap/bootstrap tests re-verified against the
+`_or_none` change). Full suite: 263 passed, same 4 pre-existing unrelated
+failures (`test_momentum_atr_execution.py` scoring-formula drift,
+`test_universe_research.py` universe-size drift) — zero regressions.
