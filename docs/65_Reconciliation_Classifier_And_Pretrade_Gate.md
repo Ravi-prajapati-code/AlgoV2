@@ -142,14 +142,26 @@ Full suite: 249 passed (7 new), same 4 pre-existing unrelated failures
   allow-with-warning state — real protection, but not yet the fail-closed
   state the gate is designed for. Deploying the cron is the single action
   that activates the rest of this subsystem's protection.
-- **Phase 26 live scan**: cannot be done from this local clone — local
-  `db/*.db` files are stale dev fixtures. Requires running
-  `observability_snapshot.py` against the live server once the cron (or a
-  manual run) exists.
-- **ASIANENE / CYIENT disposition**: left for manual resolution once M0/M1
-  are live — the classifier can now name what's wrong (`GHOST_DB_POSITION`
-  ×2 correlated for ASIANENE, `MANUAL_BROKER_POSITION` for CYIENT pending
-  fill-history confirmation), but nothing auto-closes either finding.
 - **M4/M5/M6 remain explicitly deferred** per the plan, with stated trigger
   conditions — order/fill ledger, allocation-transition state machine,
   corporate-action handling. Not built speculatively.
+
+**Resolved since this doc was written**:
+- **Phase 26 live scan**: run manually against the live server post-deploy
+  (2026-09-09). GOLDBEES was a classifier false-positive, not a real
+  incident — fixed same day (a44bf12, see below). ASIANENE/ATHERENERG/
+  CYIENT/WELCORP were real broker-vs-ledger gaps, corrected — see docs/66.
+- **GOLDBEES classifier false-positive (a44bf12, 2026-09-09)**: the live
+  scan surfaced GOLDBEES as `DUPLICATE_OWNERSHIP` even after docs/64's fix —
+  MAIN's post-cutover *paper* position (102 sh, opened 2026-09-07, after
+  `MAIN_STRATEGY_PAPER_SINCE`) was still being counted toward `main_qty` at
+  both `classify()` call sites (`observability_snapshot.py` and
+  `reconcile_positions.py`), even though MAIN is paper-only and that
+  position was never real. Fixed by filtering MAIN positions on
+  `entry_date >= MAIN_STRATEGY_PAPER_SINCE` per-position (not a blanket
+  "ignore MAIN if paper mode is on today" check, which would have wrongly
+  blinded pre-cutover real positions like ASIANENE). Regression tests added
+  at both call sites; live-verified post-deploy: GOLDBEES now `MATCH`.
+- **ASIANENE / CYIENT disposition**: resolved via docs/66's broker-truth
+  correction, alongside two more symbols the live scan found in the same
+  state (ATHERENERG, WELCORP).
