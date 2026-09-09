@@ -110,9 +110,11 @@ the kill switch). Applied live on 2026-09-09 15:39 IST. Verified post-apply:
 | `kill_switch_tripped` | False |
 | `kill_switch_tripped_date` | 2026-09-09 (preserved) |
 
-## Outstanding risk carried forward
+## Outstanding risk carried forward — superseded
 
-WELCORP, ATHERENERG, and ASIANENE root causes remain unconfirmed (only
-CYIENT has a confirmed manual-liquidation explanation). Resuming live BUYs
-does not resolve this — it is an accepted, disclosed risk per the user's
-explicit decision above, not a closed item.
+WELCORP, ATHERENERG, and ASIANENE root causes were unconfirmed at the time
+this doc was written. Later the same day, the user confirmed (in
+conversation, not via an independent order/fill record) that these were
+manual actions taken directly in the broker app — see docs/66's
+"Addendum (2026-09-09, later)". User-reported evidence, not
+system-verified the way CYIENT's cause is, but no longer an open question.

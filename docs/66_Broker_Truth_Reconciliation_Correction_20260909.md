@@ -34,8 +34,10 @@ Root cause is **confirmed** for one symbol and **unconfirmed** for three:
   holding without momentum_atr's ledger ever being told.
 - **WELCORP.NS, ATHERENERG.NS, ASIANENE.NS**: same no-exit-record signature
   as CYIENT, but no matching manual-liquidation (or other) trade record was
-  found to explain them. Cause not established — this is stated honestly
-  rather than assumed.
+  found to explain them. Cause not established from the trade/order records
+  at the time this doc was first written — see 2026-09-09 addendum below,
+  where the user confirmed these were manual actions taken directly in the
+  broker app.
 
 ## Decision
 
@@ -228,3 +230,24 @@ the two pre-existing allocation-cap/bootstrap tests re-verified against the
 `_or_none` change). Full suite: 263 passed, same 4 pre-existing unrelated
 failures (`test_momentum_atr_execution.py` scoring-formula drift,
 `test_universe_research.py` universe-size drift) — zero regressions.
+
+## Addendum (2026-09-09, later): WELCORP/ATHERENERG/ASIANENE root cause confirmed by user
+
+The three symbols flagged above as "cause not established" are now
+explained: the user confirmed, in conversation, that these were manual
+actions taken directly in the broker app.
+
+**Evidence level**: this is user-reported, not independently verified
+against a broker order/fill record the way CYIENT's cause was (CYIENT had
+an actual `MANUAL_LIQUIDATION_PRE_PAPER_SWITCH` trade row in `trading.db`
+to point to). No equivalent order record exists for WELCORP, ATHERENERG, or
+ASIANENE — the user's statement is the only evidence for these three.
+Recorded as such, not upgraded to "system-confirmed."
+
+**Consequence**: this does not change any correction already applied — the
+write-off in the original section above (removing the phantom shares from
+momentum_atr's ledger to match broker reality) was the right action
+regardless of *why* the broker-side quantity was lower; it now simply has a
+stated cause instead of an open question. `docs/67`'s "outstanding risk
+carried forward" note (root cause unconfirmed for 3 of 4 symbols) is
+superseded by this addendum.
