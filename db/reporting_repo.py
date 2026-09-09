@@ -26,7 +26,17 @@ def init_db():
     schema_path = os.path.join(os.path.dirname(__file__), "reporting_schema.sql")
     with open(schema_path, "r") as f:
         conn.executescript(f.read())
-    conn.commit()
+    # Migrate existing reporting.db files -- SQLite has no ADD COLUMN IF NOT
+    # EXISTS (same pattern as db/repository.py::init_db()'s migration list).
+    for migration in [
+        "ALTER TABLE strategy_position_snapshot ADD COLUMN classification TEXT",
+        "ALTER TABLE strategy_position_snapshot ADD COLUMN evidence_json TEXT",
+    ]:
+        try:
+            conn.execute(migration)
+            conn.commit()
+        except Exception:
+            pass  # column already exists
     conn.close()
 
 
@@ -134,14 +144,19 @@ def load_latest_strategy_capital_snapshot(strategy_id: str) -> Optional[dict]:
 # ── strategy_position_snapshot ───────────────────────────────────────────
 
 def save_strategy_position_snapshot(ts: str, symbol: str, broker_qty: int,
-                                     main_qty: int = 0, momentum_atr_qty: int = 0) -> int:
+                                     main_qty: int = 0, momentum_atr_qty: int = 0,
+                                     classification: Optional[str] = None,
+                                     evidence: Optional[dict] = None) -> int:
     collision = 1 if (main_qty + momentum_atr_qty) != broker_qty else 0
+    evidence_json = json.dumps(evidence) if evidence is not None else None
     conn = get_connection()
     cur = conn.execute(
         """INSERT INTO strategy_position_snapshot
-           (ts, symbol, main_qty, momentum_atr_qty, broker_qty, collision_flag)
-           VALUES (?, ?, ?, ?, ?, ?)""",
-        (ts, symbol, main_qty, momentum_atr_qty, broker_qty, collision),
+           (ts, symbol, main_qty, momentum_atr_qty, broker_qty, collision_flag,
+            classification, evidence_json)
+           VALUES (?, ?, ?, ?, ?, ?, ?, ?)""",
+        (ts, symbol, main_qty, momentum_atr_qty, broker_qty, collision,
+         classification, evidence_json),
     )
     conn.commit()
     row_id = cur.lastrowid
@@ -165,6 +180,24 @@ def load_latest_position_snapshot_ts() -> Optional[str]:
     ).fetchone()
     conn.close()
     return row["ts"] if row else None
+
+
+def load_latest_position_classification(symbol: str) -> Optional[dict]:
+    """Most recent classification row for `symbol`, across any ts -- used by
+    reconciliation/gate.py (M3) so the pre-trade gate never has to know
+    reporting.db's row shape directly."""
+    conn = get_connection()
+    row = conn.execute(
+        """SELECT * FROM strategy_position_snapshot
+           WHERE symbol = ? ORDER BY id DESC LIMIT 1""",
+        (symbol,),
+    ).fetchone()
+    conn.close()
+    if row is None:
+        return None
+    d = dict(row)
+    d["evidence"] = json.loads(d["evidence_json"]) if d.get("evidence_json") else None
+    return d
 
 
 # ── strategy_reconciliation_log ──────────────────────────────────────────

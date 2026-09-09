@@ -46,6 +46,7 @@ logger = logging.getLogger("reconciler")
 
 import requests
 from config.settings import TELEGRAM_BOT_TOKEN, TELEGRAM_CHAT_ID
+from reconciliation.classifier import Classification, classify
 
 
 def _send(msg: str):
@@ -80,26 +81,71 @@ def get_broker_positions():
     return [p for p in positions if p.product == "CNC"]
 
 
-def get_db_symbols() -> set:
-    """Fetch open positions from local DB."""
-    from db.repository import load_positions
-    return {p.symbol for p in load_positions("OPEN")}
-
-
-def get_momentum_atr_symbols() -> set:
-    """Open symbols the standalone momentum_atr strategy (docs/57, docs/58)
-    holds on the same shared Upstox account, from its own isolated DB
-    (db/momentum_atr.db, never db/trading.db). Without this, a symbol only
-    momentum_atr bought looks like a "broker-only unknown position" to this
-    reconciler and gets auto-inserted into the MAIN strategy's db/trading.db
-    -- corrupting it, not just false-alerting (see plan velvet-cooking-minsky,
-    open risk #1: shared-broker fungibility)."""
+def _manual_evidence_for_symbol(symbol: str) -> bool:
+    """True if trading.db has a trade record for `symbol` whose exit_reason
+    names a manual broker-side action (e.g. MANUAL_LIQUIDATION_PRE_PAPER_SWITCH)
+    -- the evidence gate that separates MANUAL_BROKER_POSITION (explained,
+    UNSAFE-tier not auto-repaired) from QUANTITY_MISMATCH (unexplained)."""
+    from db.repository import get_connection
+    conn = get_connection()
     try:
-        from db import momentum_atr_repo
-        return {p.symbol for p in momentum_atr_repo.load_positions("OPEN")}
-    except Exception as e:
-        logger.warning("Could not load momentum_atr positions (DB not initialised?): %s", e)
-        return set()
+        row = conn.execute(
+            "SELECT 1 FROM trades WHERE symbol = ? AND exit_reason LIKE '%MANUAL%' LIMIT 1",
+            (symbol,),
+        ).fetchone()
+        return row is not None
+    finally:
+        conn.close()
+
+
+def _prior_record_exists_for_symbol(symbol: str) -> bool:
+    """True if trading.db has ANY record (any status) for `symbol` -- lets a
+    broker-only symbol classify as BROKER_ONLY_POSITION (resolvable, mirrors
+    daily_runner's origin-recovery heuristic) instead of UNKNOWN_POSITION."""
+    from db.repository import get_connection
+    conn = get_connection()
+    try:
+        row = conn.execute("SELECT 1 FROM positions WHERE symbol = ? LIMIT 1", (symbol,)).fetchone()
+        return row is not None
+    finally:
+        conn.close()
+
+
+def log_classifications(now_str: str, broker_positions, db_positions, atr_positions) -> None:
+    """Read-only, alert-log-only -- never touches trading.db/momentum_atr.db.
+    Shares reconciliation/classifier.py with scripts/observability_snapshot.py
+    so both scripts agree on what a mismatch means. Failure here must never
+    block the reconciler's real ghost/unknown handling above, so callers
+    catch broadly and treat this as best-effort."""
+    from db import reporting_repo as rrepo
+
+    main_qty, atr_qty, broker_qty = {}, {}, {}
+    for p in db_positions:
+        main_qty[p.symbol] = main_qty.get(p.symbol, 0) + p.shares
+    for p in atr_positions:
+        atr_qty[p.symbol] = atr_qty.get(p.symbol, 0) + p.shares
+    for p in broker_positions:
+        broker_qty[p.symbol] = broker_qty.get(p.symbol, 0) + p.quantity
+
+    all_symbols = set(main_qty) | set(atr_qty) | set(broker_qty)
+    rrepo.init_db()
+    ts = date.today().isoformat()
+    non_match = []
+    for sym in sorted(all_symbols):
+        m, a, b = main_qty.get(sym, 0), atr_qty.get(sym, 0), broker_qty.get(sym, 0)
+        evidence = {
+            "manual_evidence": _manual_evidence_for_symbol(sym),
+            "prior_record_exists": _prior_record_exists_for_symbol(sym),
+        }
+        cls, ev = classify(sym, m, a, b, evidence)
+        if cls != Classification.MATCH:
+            non_match.append((sym, m, a, b, cls, ev))
+
+    if non_match:
+        detail = "; ".join(f"{s}: main={m} atr={a} broker={b} -> {c.value}" for s, m, a, b, c, _ in non_match)
+        rrepo.record_reconciliation(ts, "position_classification", "FAIL", detail=detail)
+    else:
+        rrepo.record_reconciliation(ts, "position_classification", "PASS")
 
 
 def run_reconcile():
@@ -118,11 +164,28 @@ def run_reconcile():
 
     from db.repository import load_positions
 
+    db_positions = load_positions("OPEN")
+    from db import momentum_atr_repo
+    try:
+        atr_positions = momentum_atr_repo.load_positions("OPEN")
+    except Exception as e:
+        logger.warning("Could not load momentum_atr positions for classification: %s", e)
+        atr_positions = []
+
+    try:
+        log_classifications(now_str, broker_positions, db_positions, atr_positions)
+    except Exception as e:
+        logger.error("Classification logging failed (non-fatal, does not affect reconciliation): %s", e)
+
     broker_syms = {p.symbol for p in broker_positions}
-    db_syms = get_db_symbols()
-    momentum_atr_syms = get_momentum_atr_symbols()
+    db_syms = {p.symbol for p in db_positions}
+    momentum_atr_syms = {p.symbol for p in atr_positions}
 
     ghost = db_syms - broker_syms                            # DB open, broker doesn't have it — alert only
+    # momentum_atr_syms excluded so a symbol only momentum_atr bought never
+    # looks like a "broker-only unknown position" and gets auto-inserted into
+    # MAIN's trading.db -- corrupting it, not just false-alerting (shared-
+    # broker fungibility, see CYIENT incident 2026-09).
     unknown = broker_syms - db_syms - momentum_atr_syms       # Broker holds, neither ledger knows — auto-fixed below
 
     logger.info("DB open: %s", db_syms)

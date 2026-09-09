@@ -22,6 +22,7 @@ qty. Reject/timeout/partial -> alert, ledger untouched (partial-fill gap
 matches an existing one in portfolio/manager.py, not a new regression --
 see plan velvet-cooking-minsky, open risk #3).
 """
+import logging
 import time
 from datetime import date as _date
 from typing import Dict, List, Optional, Tuple
@@ -33,6 +34,8 @@ from db import momentum_atr_repo as repo
 from momentum_atr.models import Position, Trade
 from momentum_atr.risk import check_kill_switch
 from notifications.telegram import send_error_alert, send_message
+
+logger = logging.getLogger(__name__)
 
 PORTFOLIO_SIZE = 3
 SWAP_LOSS_PCT = -3.0
@@ -189,9 +192,19 @@ def _execute_buys(broker: BaseBroker, bought: Dict[str, int], reason: str,
                    closes: Dict[str, float], dry_run: bool, plan: list) -> float:
     """Places confirmed BUYs, writes/updates positions, returns total cash
     actually spent (only for confirmed fills)."""
+    from reconciliation.gate import pre_trade_check
+
     spent = 0.0
     for sym, qty in bought.items():
         if qty <= 0:
+            continue
+        # Pre-trade integrity gate (docs/60 M3) -- per-symbol, shared
+        # chokepoint for all three call sites (initial split, swap-winner,
+        # rank-exit reallocation), so one poisoned symbol only loses this
+        # one buy, never the whole cycle.
+        gate_ok, gate_reason = pre_trade_check(sym, "momentum_atr")
+        if not gate_ok:
+            logger.warning("[Reconciliation] Skip buy %s: %s", sym, gate_reason)
             continue
         res = _confirmed_fill(broker, "BUY", sym, qty, dry_run, plan)
         if res is None:

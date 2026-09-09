@@ -42,7 +42,12 @@ def _main_risk_state():
     snaps = [s for s in load_snapshots() if s.date >= MAIN_STRATEGY_PAPER_SINCE]
     if not snaps:
         return None
-    peak = max(s.strategy_value for s in snaps)
+    # A row inside that trusted window can still be a bookkeeping correction,
+    # not real trading P&L (2026-09-07 GOLDBEES dedupe) -- excluded from the
+    # peak so this page can't show a peak the live gate no longer uses. See
+    # docs/64 and the identical filter in portfolio/manager.py._load_state.
+    peak_eligible = [s for s in snaps if s.value_change_reason != 'OWNERSHIP_CORRECTION']
+    peak = max(s.strategy_value for s in peak_eligible) if peak_eligible else snaps[-1].strategy_value
     current = snaps[-1].strategy_value
     if peak <= 0:
         return None

@@ -327,6 +327,19 @@ MAIN_STRATEGY_PAPER_SINCE = date(2026, 9, 3)
 # trading decisions -- a derived/cached view for the dashboard only.
 REPORTING_DB_PATH = os.getenv("REPORTING_DB_PATH_OVERRIDE", "db/reporting.db")
 
+# Pre-trade integrity gate (docs/60 M3, plan optimized-humming-crayon) —
+# reconciliation/gate.py::pre_trade_check() consults reporting.db's latest
+# classification for a symbol before either strategy's BUY loop places an
+# order. Kill-switch style flag, same pattern as DD_THROTTLE_DISABLED_ENABLED.
+PRE_TRADE_INTEGRITY_GATE_ENABLED = os.getenv("PRE_TRADE_INTEGRITY_GATE_ENABLED", "true").lower() in ("true", "1", "yes")
+# How many trading (weekday) sessions old the latest reporting.db
+# classification for a symbol may be before the gate blocks it as stale --
+# same mechanism catches "cron didn't run" and "broker read failed" (the
+# latter never writes a new strategy_position_snapshot row at all, see
+# scripts/observability_snapshot.py::main()'s early-exit on broker_snap is
+# None, so the last-known row's age is the only signal available).
+RECONCILIATION_STALENESS_TRADING_SESSIONS = int(os.getenv("RECONCILIATION_STALENESS_TRADING_SESSIONS", "2"))
+
 # ──────────────────────────────────────────────
 # BACKTEST ACCEPTANCE CRITERIA
 # ──────────────────────────────────────────────

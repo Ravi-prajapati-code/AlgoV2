@@ -194,7 +194,14 @@ class PortfolioManager:
         # entirely). Never remove this filter without re-verifying cash is
         # fully isolated for the whole history being included.
         snapshots = [s for s in repo.load_snapshots() if s.date >= MAIN_STRATEGY_PAPER_SINCE]
-        if snapshots:
+        # A row inside the trusted window above can still be a bookkeeping
+        # correction, not real trading P&L (2026-09-07 GOLDBEES dedupe:
+        # strategy_value dropped 54950.15->32811.16 same-day, no trade behind
+        # it). value_change_reason marks that explicitly (docs/64) so a
+        # correction can never be mistaken for a real drawdown the way
+        # MAIN_STRATEGY_PAPER_SINCE alone couldn't prevent.
+        peak_eligible = [s for s in snapshots if s.value_change_reason != 'OWNERSHIP_CORRECTION']
+        if peak_eligible:
             # Only update peak_value if it's higher than what we have
             # In live mode, if snapshots were empty, peak_value was set to live_pv above
             # peak_value feeds the drawdown-throttle comparison against strategy_value()
@@ -203,7 +210,7 @@ class PortfolioManager:
             # positions exist. docs/30. strategy_value falls back to total_value for any
             # pre-migration snapshot row (repository.py load_snapshots), so this is exact
             # for existing history and correct going forward.
-            self.peak_value = max(getattr(self, 'peak_value', 0), max(s.strategy_value for s in snapshots))
+            self.peak_value = max(getattr(self, 'peak_value', 0), max(s.strategy_value for s in peak_eligible))
         elif not hasattr(self, 'peak_value'):
             self.peak_value = self.initial_capital
         self.new_trades_today = 0
@@ -577,6 +584,16 @@ class PortfolioManager:
                     if not allowed:
                         logger.warning(f"  [Risk] Skip buy: {reason}")
                         break
+
+                    # Pre-trade integrity gate (docs/60 M3) — per-symbol, unlike
+                    # the portfolio-wide drawdown check above: one symbol with a
+                    # bad broker/DB reconciliation must not block every other
+                    # buy this cycle, so this is `continue` not `break`.
+                    from reconciliation.gate import pre_trade_check
+                    gate_ok, gate_reason = pre_trade_check(sig.symbol, "main")
+                    if not gate_ok:
+                        logger.warning(f"  [Reconciliation] Skip buy {sig.symbol}: {gate_reason}")
+                        continue
 
                     # Feature 3: skip if RS rank has been falling for N consecutive days
                     if (SCORE_DROP_EXIT_ENABLED

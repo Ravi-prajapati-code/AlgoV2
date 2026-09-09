@@ -88,7 +88,8 @@ CREATE TABLE IF NOT EXISTS portfolio_snapshots (
     drawdown_pct    REAL    DEFAULT 0,
     regime          TEXT,
     kill_switch     INTEGER DEFAULT 0,  -- 0=off, 1=on
-    strategy_value  REAL    DEFAULT 0   -- cash + strategy-origin positions only, see docs/30
+    strategy_value  REAL    DEFAULT 0,  -- cash + strategy-origin positions only, see docs/30
+    value_change_reason TEXT DEFAULT 'REALIZED_TRADING_PNL'  -- see docs/64; OWNERSHIP_CORRECTION rows excluded from peak-seeking max()
 );
 
 -- ── RISK EVENTS ───────────────────────────────────────────────────────────

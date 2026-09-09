@@ -30,6 +30,11 @@ def check_kill_switch(today: date, cash: float, positions: List[Position],
     Returns True if new BUYs should be blocked this run."""
     state = repo.get_state()
     equity = compute_equity(cash, positions, prices)
+    # NOTE: peak_equity is a persisted running max, not derived from
+    # portfolio_snapshots -- a manual ownership correction to momentum_atr's
+    # own ledger has no docs/64 value_change_reason marking here and would
+    # permanently poison this peak the same way it did MAIN's. No known
+    # incident yet; out of scope for this fix (plan optimized-humming-crayon M2).
     peak = max(state.peak_equity, equity)
     drawdown = (peak - equity) / peak if peak > 0 else 0.0
     tripped = drawdown >= MOMENTUM_ATR_DD_KILL_PCT

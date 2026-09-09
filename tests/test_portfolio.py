@@ -109,6 +109,131 @@ class TestRiskControls:
         assert ok is True
 
 
+class TestPeakValueExcludesOwnershipCorrections:
+    """docs/64, plan optimized-humming-crayon M2: a legitimate correction
+    (e.g. the 2026-09-07 GOLDBEES dedupe) landing INSIDE the already-trusted
+    MAIN_STRATEGY_PAPER_SINCE window still poisoned peak_value, because
+    nothing on a snapshot row distinguished it from real trading P&L.
+    value_change_reason='OWNERSHIP_CORRECTION' rows must never win the
+    peak-seeking max(), regardless of whether the correction reads higher
+    or lower than the real peak."""
+
+    def test_real_incident_numbers_correction_never_lowers_peak(self, tmp_path, monkeypatch):
+        from datetime import timedelta
+        from db import repository as repo
+        from db import reporting_repo as rrepo
+        from db.models import PortfolioSnapshot
+        from config.settings import MAIN_STRATEGY_PAPER_SINCE
+        from portfolio.manager import PortfolioManager
+
+        db_path = str(tmp_path / "trading_test3.db")
+        monkeypatch.setattr(repo, "DB_PATH", db_path)
+        monkeypatch.setattr(rrepo, "REPORTING_DB_PATH", str(tmp_path / "reporting_test3.db"))
+        repo.init_db()
+
+        d_real = MAIN_STRATEGY_PAPER_SINCE + timedelta(days=1)
+        d_correction = MAIN_STRATEGY_PAPER_SINCE + timedelta(days=2)
+
+        # Real trading history reaching the true peak.
+        repo.save_snapshot(PortfolioSnapshot(
+            date=d_real, cash=54_950.15, invested=0.0, total_value=54_950.15,
+            open_positions=0, strategy_value=54_950.15,
+        ))
+        # The GOLDBEES-shape dedupe: a same-day bookkeeping fix that dropped
+        # strategy_value, explicitly marked as a correction, not a real loss.
+        repo.save_snapshot(PortfolioSnapshot(
+            date=d_correction, cash=32_811.16, invested=0.0, total_value=32_811.16,
+            open_positions=0, strategy_value=32_811.16,
+        ))
+        repo.record_ownership_correction(
+            symbol="GOLDBEES.NS", prior_qty=175, corrected_qty=0,
+            reason="Duplicate ownership dedupe -- momentum_atr already held these shares",
+            source="test_real_incident_numbers_correction_never_lowers_peak",
+            snapshot_date=d_correction,
+        )
+
+        pm = PortfolioManager(initial_capital=1_000.0, broker=None)
+
+        # max() already ignores a LOWER value regardless of any filter -- this
+        # regression exists to pin the real incident's numbers and confirm
+        # record_ownership_correction()/the OWNERSHIP_CORRECTION marking don't
+        # themselves corrupt peak_value. The non-trivial case (a correction
+        # that reads HIGHER than the real peak) is covered by
+        # test_higher_value_correction_still_excluded below.
+        assert pm.peak_value == pytest.approx(54_950.15)
+
+    def test_higher_value_correction_still_excluded(self, tmp_path, monkeypatch):
+        """Filter is reason-based, not direction-based -- a correction that
+        reads HIGHER than the real peak must not be allowed to win either."""
+        from datetime import timedelta
+        from db import repository as repo
+        from db import reporting_repo as rrepo
+        from db.models import PortfolioSnapshot
+        from config.settings import MAIN_STRATEGY_PAPER_SINCE
+        from portfolio.manager import PortfolioManager
+
+        db_path = str(tmp_path / "trading_test4.db")
+        monkeypatch.setattr(repo, "DB_PATH", db_path)
+        monkeypatch.setattr(rrepo, "REPORTING_DB_PATH", str(tmp_path / "reporting_test4.db"))
+        repo.init_db()
+
+        d_real = MAIN_STRATEGY_PAPER_SINCE + timedelta(days=1)
+        d_correction = MAIN_STRATEGY_PAPER_SINCE + timedelta(days=2)
+
+        repo.save_snapshot(PortfolioSnapshot(
+            date=d_real, cash=40_000.0, invested=0.0, total_value=40_000.0,
+            open_positions=0, strategy_value=40_000.0,
+        ))
+        repo.save_snapshot(PortfolioSnapshot(
+            date=d_correction, cash=99_999.0, invested=0.0, total_value=99_999.0,
+            open_positions=0, strategy_value=99_999.0,
+        ))
+        repo.record_ownership_correction(
+            symbol="TEST.NS", prior_qty=0, corrected_qty=100,
+            reason="Manual broker-only position assigned to strategy after audit",
+            source="test_higher_value_correction_still_excluded",
+            snapshot_date=d_correction,
+        )
+
+        pm = PortfolioManager(initial_capital=1_000.0, broker=None)
+
+        assert pm.peak_value == pytest.approx(40_000.0)
+
+    def test_record_ownership_correction_rejects_empty_reason_or_source(self, tmp_path, monkeypatch):
+        from db import repository as repo
+
+        db_path = str(tmp_path / "trading_test5.db")
+        monkeypatch.setattr(repo, "DB_PATH", db_path)
+        repo.init_db()
+
+        with pytest.raises(ValueError):
+            repo.record_ownership_correction(
+                symbol="X.NS", prior_qty=1, corrected_qty=0,
+                reason="", source="test",
+            )
+        with pytest.raises(ValueError):
+            repo.record_ownership_correction(
+                symbol="X.NS", prior_qty=1, corrected_qty=0,
+                reason="valid reason", source="",
+            )
+
+    def test_default_and_backfilled_rows_classify_as_realized_trading_pnl(self, tmp_path, monkeypatch):
+        from db import repository as repo
+        from db.models import PortfolioSnapshot
+        from datetime import date as date_cls
+
+        db_path = str(tmp_path / "trading_test6.db")
+        monkeypatch.setattr(repo, "DB_PATH", db_path)
+        repo.init_db()
+
+        repo.save_snapshot(PortfolioSnapshot(
+            date=date_cls(2026, 9, 1), cash=1_000.0, invested=0.0, total_value=1_000.0,
+            open_positions=0, strategy_value=1_000.0,
+        ))
+        snaps = repo.load_snapshots()
+        assert snaps[-1].value_change_reason == "REALIZED_TRADING_PNL"
+
+
 class TestPeakValueExcludesPreLiveSharedCashHistory:
     """2026-09-07 finding: PortfolioManager._load_state() computed peak_value
     as max(strategy_value) over ALL snapshot history, with no cutoff. Before

@@ -343,6 +343,11 @@ def cmd_risk_report(_args):
     # live gate). Excluding them here too so this report can't show the same
     # false drawdown/kill-switch reading.
     snapshots  = [s for s in repo.load_snapshots() if s.date >= MAIN_STRATEGY_PAPER_SINCE]
+    # A row inside that trusted window can still be a bookkeeping correction,
+    # not real trading P&L (2026-09-07 GOLDBEES dedupe) -- excluded from the
+    # peak so this report can't show a peak the live gate no longer uses.
+    # See docs/64 and the identical filter in portfolio/manager.py._load_state.
+    peak_eligible = [s for s in snapshots if s.value_change_reason != 'OWNERSHIP_CORRECTION']
 
     # Get latest prices for current valuation
     prices = {}
@@ -355,7 +360,7 @@ def cmd_risk_report(_args):
 
     if snapshots:
         cash = snapshots[-1].cash
-        peak_val = max(s.total_value for s in snapshots)
+        peak_val = max(s.total_value for s in peak_eligible) if peak_eligible else INITIAL_CAPITAL
     else:
         cash = INITIAL_CAPITAL
         peak_val = INITIAL_CAPITAL

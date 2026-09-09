@@ -84,4 +84,5 @@ class PortfolioSnapshot:
     regime: Optional[str] = None
     capital_injected: float = 0.0   # external deposits detected that day — excluded from P&L
     strategy_value: float = 0.0     # cash + strategy-origin positions only — see docs/30. 0.0 = unset/pre-migration
+    value_change_reason: str = "REALIZED_TRADING_PNL"  # OWNERSHIP_CORRECTION rows excluded from peak-seeking max() — see docs/64
     id: Optional[int] = None

@@ -32,6 +32,7 @@ def init_db():
         "ALTER TABLE portfolio_snapshots ADD COLUMN capital_injected REAL DEFAULT 0",
         "ALTER TABLE positions ADD COLUMN origin TEXT DEFAULT 'strategy'",
         "ALTER TABLE portfolio_snapshots ADD COLUMN strategy_value REAL DEFAULT 0",
+        "ALTER TABLE portfolio_snapshots ADD COLUMN value_change_reason TEXT DEFAULT 'REALIZED_TRADING_PNL'",
     ]:
         try:
             conn.execute(migration)
@@ -365,10 +366,10 @@ def save_snapshot(s: PortfolioSnapshot):
     conn = get_connection()
     conn.execute(
         """INSERT OR REPLACE INTO portfolio_snapshots
-           (date, cash, invested, total_value, open_positions, daily_pnl, cumulative_pnl, regime, capital_injected, strategy_value)
-           VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)""",
+           (date, cash, invested, total_value, open_positions, daily_pnl, cumulative_pnl, regime, capital_injected, strategy_value, value_change_reason)
+           VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)""",
         (s.date.strftime("%Y-%m-%d"), s.cash, s.invested, s.total_value, s.open_positions,
-         s.daily_pnl, s.cumulative_pnl, s.regime, s.capital_injected, s.strategy_value)
+         s.daily_pnl, s.cumulative_pnl, s.regime, s.capital_injected, s.strategy_value, s.value_change_reason)
     )
     conn.commit()
     conn.close()
@@ -387,6 +388,7 @@ def load_snapshots(limit: int = 500) -> List[PortfolioSnapshot]:
             regime=r["regime"] if "regime" in r.keys() else None,
             capital_injected=r["capital_injected"] if "capital_injected" in r.keys() else 0.0,
             strategy_value=r["strategy_value"] if "strategy_value" in r.keys() and r["strategy_value"] else r["total_value"],
+            value_change_reason=r["value_change_reason"] if "value_change_reason" in r.keys() and r["value_change_reason"] else "REALIZED_TRADING_PNL",
             id=r["id"]
         ))
     return snaps
@@ -400,6 +402,42 @@ def total_capital_injected_ever() -> float:
     ).fetchone()
     conn.close()
     return float(row[0])
+
+
+def record_ownership_correction(symbol: str, prior_qty: int, corrected_qty: int,
+                                 reason: str, source: str, snapshot_date: Optional[date] = None) -> None:
+    """Explicit, auditable replacement for an ad hoc dedupe fix (e.g. the
+    2026-09-07 GOLDBEES double-count). Stamps the target date's
+    portfolio_snapshots row value_change_reason='OWNERSHIP_CORRECTION' so
+    portfolio/manager.py's peak-seeking max() (and the equivalent filters in
+    main.py/dashboard/views/risk_monitor.py) never mistakes this for real
+    trading P&L -- see docs/64. Never inferred from a delta; reason/source
+    must be explicitly supplied."""
+    if not reason or not reason.strip():
+        raise ValueError("record_ownership_correction requires a non-empty reason")
+    if not source or not source.strip():
+        raise ValueError("record_ownership_correction requires a non-empty source")
+
+    target_date = (snapshot_date or date.today()).strftime("%Y-%m-%d")
+    conn = get_connection()
+    conn.execute(
+        "UPDATE portfolio_snapshots SET value_change_reason = 'OWNERSHIP_CORRECTION' WHERE date = ?",
+        (target_date,),
+    )
+    conn.commit()
+    conn.close()
+
+    from db import reporting_repo as rrepo
+    rrepo.init_db()
+    rrepo.record_reconciliation(
+        target_date, "ownership_correction", "FAIL", detail=f"{symbol}: {prior_qty} -> {corrected_qty}",
+        auto_repaired=True,
+        repair_what=f"portfolio_snapshots.value_change_reason for {target_date}",
+        repair_why=reason,
+        repair_previous_value=str(prior_qty),
+        repair_new_value=str(corrected_qty),
+        repair_source=source,
+    )
 
 
 def snapshot_exists_for_date(d: date) -> bool:

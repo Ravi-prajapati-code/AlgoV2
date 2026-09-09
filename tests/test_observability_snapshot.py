@@ -11,6 +11,8 @@ from types import SimpleNamespace
 
 import pytest
 
+from reconciliation.classifier import Classification
+
 
 @pytest.fixture
 def rrepo(tmp_path, monkeypatch):
@@ -51,9 +53,10 @@ def test_snapshot_positions_no_collision_when_qtys_match(snap):
 
     rows = snap.snapshot_positions("t1", main_positions, atr_positions, broker)
 
-    assert rows == [("RELIANCE.NS", 5, 3, 8)]
+    assert rows == [("RELIANCE.NS", 5, 3, 8, Classification.MATCH)]
     saved = snap.rrepo.load_position_snapshots_for_ts("t1")
     assert saved[0]["collision_flag"] == 0
+    assert saved[0]["classification"] == Classification.MATCH.value
 
 
 def test_snapshot_positions_collision_when_qtys_mismatch(snap):
@@ -75,7 +78,7 @@ def test_snapshot_positions_covers_broker_only_symbol(snap):
 
     rows = snap.snapshot_positions("t1", [], [], broker)
 
-    assert rows == [("NEWSTOCK.NS", 0, 0, 4)]
+    assert rows == [("NEWSTOCK.NS", 0, 0, 4, Classification.UNKNOWN_POSITION)]
 
 
 # ── snapshot_main_capital: no fabricated allocation cap ──────────────────
@@ -125,52 +128,57 @@ def test_snapshot_atr_capital_falls_back_to_entry_price_on_missing_ltp(snap, mon
     assert loaded["strategy_invested_value"] == 1000.0  # 4 * fallback entry_price 250
 
 
-# ── run_reconciliation: alert-only, three independent checks ────────────
+# ── run_reconciliation: alert-only, classifier-driven ────────────────────
 
 def test_reconciliation_all_pass_when_everything_matches(snap):
-    rows = [("RELIANCE.NS", 5, 0, 5), ("INFY.NS", 0, 3, 3)]
+    rows = [
+        ("RELIANCE.NS", 5, 0, 5, Classification.MATCH),
+        ("INFY.NS", 0, 3, 3, Classification.MATCH),
+    ]
     snap.run_reconciliation("t1", rows)
 
     results = {r["check_name"]: r["result"] for r in snap.rrepo.load_recent_reconciliation()}
-    assert results["position_collision_sum"] == "PASS"
-    assert results["main_vs_broker"] == "PASS"
-    assert results["momentum_atr_vs_broker"] == "PASS"
+    assert results["position_classification"] == "PASS"
     assert snap.rrepo.load_recent_alerts() == []
 
 
-def test_reconciliation_flags_collision_and_alerts_critical(snap):
-    rows = [("RELIANCE.NS", 5, 0, 8)]  # broker shows 8, ledgers only account for 5
+def test_reconciliation_flags_mismatch_and_alerts_critical(snap):
+    # broker shows 8, ledgers only account for 5 -- QUANTITY_MISMATCH shape
+    rows = [("RELIANCE.NS", 5, 0, 8, Classification.QUANTITY_MISMATCH)]
     snap.run_reconciliation("t1", rows)
 
     results = {r["check_name"]: r["result"] for r in snap.rrepo.load_recent_reconciliation()}
-    assert results["position_collision_sum"] == "FAIL"
+    assert results["position_classification"] == "FAIL"
     alerts = snap.rrepo.load_recent_alerts()
     assert len(alerts) == 1
     assert alerts[0]["severity"] == "CRITICAL"
-    assert alerts[0]["category"] == "position_collision"
+    assert alerts[0]["category"] == Classification.QUANTITY_MISMATCH.value
 
 
 def test_reconciliation_flags_main_ghost_position(snap):
     """DB open, broker has nothing -- a possibly-failed sell, alert-only
     (never auto-closed), same convention as reconcile_positions.py."""
-    rows = [("RELIANCE.NS", 5, 0, 0)]
+    rows = [("RELIANCE.NS", 5, 0, 0, Classification.GHOST_DB_POSITION)]
     snap.run_reconciliation("t1", rows)
 
     results = {r["check_name"]: r["result"] for r in snap.rrepo.load_recent_reconciliation()}
-    assert results["main_vs_broker"] == "WARNING"
+    assert results["position_classification"] == "FAIL"
+    alerts = snap.rrepo.load_recent_alerts()
+    assert alerts[0]["severity"] == "WARNING"
+    assert alerts[0]["category"] == Classification.GHOST_DB_POSITION.value
 
 
 def test_reconciliation_flags_momentum_atr_ghost_position_new_check(snap):
     """This check does not exist anywhere else in the codebase today
     (docs/60 Page 14) -- confirms it actually fires and raises a WARNING
     alert, not just a silent log line."""
-    rows = [("INFY.NS", 0, 3, 0)]
+    rows = [("INFY.NS", 0, 3, 0, Classification.GHOST_DB_POSITION)]
     snap.run_reconciliation("t1", rows)
 
     results = {r["check_name"]: r["result"] for r in snap.rrepo.load_recent_reconciliation()}
-    assert results["momentum_atr_vs_broker"] == "WARNING"
+    assert results["position_classification"] == "FAIL"
     alerts = snap.rrepo.load_recent_alerts()
-    assert any(a["category"] == "momentum_atr_ghost_position" for a in alerts)
+    assert any(a["category"] == Classification.GHOST_DB_POSITION.value for a in alerts)
 
 
 # ── get_broker_snapshot: CNC-only filter, fail-closed on empty ──────────
@@ -229,3 +237,54 @@ def test_get_broker_snapshot_returns_none_on_exception(snap, monkeypatch):
     monkeypatch.setattr("broker.upstox.UpstoxBroker", lambda: fake_broker)
 
     assert snap.get_broker_snapshot() is None
+
+
+# ── main(): cron-cycle orchestration, discoverable from reporting.db alone ─
+
+def test_main_aborts_with_failed_run_log_when_broker_unavailable(snap, monkeypatch):
+    """A cron failure must be discoverable from reporting.db alone (no log
+    grepping needed) -- confirms the FAILED row actually lands before exit."""
+    monkeypatch.setattr(snap, "get_broker_snapshot", lambda: None)
+
+    with pytest.raises(SystemExit) as exc_info:
+        snap.main()
+
+    assert exc_info.value.code == 1
+    runs = snap.rrepo.load_recent_run_log()
+    assert runs[0]["status"] == "FAILED"
+    assert runs[0]["job_name"] == "observability_snapshot"
+
+
+def test_main_ok_run_log_and_append_only_position_snapshots_across_cycles(snap, monkeypatch):
+    """Two consecutive cron cycles for the same symbol must both persist as
+    distinct rows -- strategy_position_snapshot has no upsert path, it is
+    append-only immutable history by design."""
+    calls = {"n": 0}
+
+    def _fake_broker_snap():
+        calls["n"] += 1
+        qty = 5 if calls["n"] == 1 else 7  # qty changes between cycles
+        snap_dict = _broker_snap(qty_by_symbol={"RELIANCE.NS": qty}, cash=1000.0, total_equity=1000.0 + qty * 100)
+        snap_dict["holdings"] = {"RELIANCE.NS": {"qty": qty, "avg_price": 100.0, "ltp": 100.0}}
+        return snap_dict
+
+    monkeypatch.setattr(snap, "get_broker_snapshot", _fake_broker_snap)
+    monkeypatch.setattr(snap, "get_main_state", lambda: ([_pos("RELIANCE.NS", 5)], None))
+    monkeypatch.setattr(snap, "get_momentum_atr_state", lambda: ([], SimpleNamespace(cash=0.0)))
+
+    snap.main()
+    snap.main()
+
+    runs = snap.rrepo.load_recent_run_log()
+    assert len(runs) == 2
+    assert all(r["status"] == "OK" for r in runs)
+
+    # Both cycles wrote a row for RELIANCE.NS -- confirm 2 distinct rows exist,
+    # not one overwritten row.
+    import sqlite3
+    conn = sqlite3.connect(snap.rrepo.REPORTING_DB_PATH)
+    count = conn.execute(
+        "SELECT COUNT(*) FROM strategy_position_snapshot WHERE symbol = 'RELIANCE.NS'"
+    ).fetchone()[0]
+    conn.close()
+    assert count == 2

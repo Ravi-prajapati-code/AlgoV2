@@ -33,6 +33,7 @@ from config.settings import (
     DB_PATH, MOMENTUM_ATR_DB_PATH, MOMENTUM_ATR_CAPITAL_ALLOCATION_PCT,
 )
 from db import reporting_repo as rrepo
+from reconciliation.classifier import Classification, classify
 
 
 def _now_iso() -> str:
@@ -100,9 +101,16 @@ def get_momentum_atr_state():
 
 
 def snapshot_positions(ts: str, main_positions, atr_positions, broker_snap: dict) -> list:
-    """Writes the 3-way per-symbol qty view + collision flag. Returns
-    (symbol, main_qty, atr_qty, broker_qty) rows for the reconciliation
-    checks below, so they don't have to re-query."""
+    """Writes the 3-way per-symbol qty view + classification. Returns
+    (symbol, main_qty, atr_qty, broker_qty, classification) rows for the
+    reconciliation checks below, so they don't have to re-query.
+
+    No evidence lookup here (read-only/alert-only path, no trades-table
+    join) -- manual_evidence/prior_record_exists stay unset, so ambiguous
+    shapes classify conservatively (QUANTITY_MISMATCH not
+    MANUAL_BROKER_POSITION, UNKNOWN_POSITION not BROKER_ONLY_POSITION).
+    scripts/reconcile_positions.py is the one path with an origin-recovery
+    heuristic and passes real evidence."""
     main_qty = {}
     for p in main_positions:
         main_qty[p.symbol] = main_qty.get(p.symbol, 0) + p.shares
@@ -116,8 +124,12 @@ def snapshot_positions(ts: str, main_positions, atr_positions, broker_snap: dict
         m = main_qty.get(sym, 0)
         a = atr_qty.get(sym, 0)
         b = broker_snap["qty_by_symbol"].get(sym, 0)
-        rrepo.save_strategy_position_snapshot(ts, sym, broker_qty=b, main_qty=m, momentum_atr_qty=a)
-        rows.append((sym, m, a, b))
+        cls, ev = classify(sym, m, a, b)
+        rrepo.save_strategy_position_snapshot(
+            ts, sym, broker_qty=b, main_qty=m, momentum_atr_qty=a,
+            classification=cls.value, evidence=ev,
+        )
+        rows.append((sym, m, a, b, cls))
     return rows
 
 
@@ -161,47 +173,41 @@ def snapshot_atr_capital(ts: str, atr_positions, atr_state, broker_snap: dict) -
     )
 
 
+_ALERT_SEVERITY = {
+    Classification.DUPLICATE_OWNERSHIP: "CRITICAL",
+    Classification.OWNERSHIP_CONFLICT: "CRITICAL",
+    Classification.QUANTITY_MISMATCH: "CRITICAL",
+    Classification.RECONCILIATION_ERROR: "CRITICAL",
+    Classification.UNKNOWN_POSITION: "WARNING",
+    Classification.MANUAL_BROKER_POSITION: "WARNING",
+    Classification.GHOST_DB_POSITION: "WARNING",
+    Classification.BROKER_DATA_UNAVAILABLE: "WARNING",
+}
+
+
 def run_reconciliation(ts: str, position_rows: list) -> None:
-    """Alert-only -- nothing here writes to either strategy DB. main_vs_broker
-    mirrors scripts/reconcile_positions.py's read-side ghost check;
-    momentum_atr_vs_broker has no prior implementation anywhere (docs/60
-    §1.7 / Page 14 -- a real production blind spot this closes for the
-    dashboard, still read-only/alert-only per the observability-only
-    constraint)."""
-    collisions = [(sym, m, a, b) for sym, m, a, b in position_rows if (m + a) != b]
-    if collisions:
-        detail = "; ".join(f"{s}: main={m} atr={a} broker={b}" for s, m, a, b in collisions)
-        rrepo.record_reconciliation(ts, "position_collision_sum", "FAIL", detail=detail)
+    """Alert-only -- nothing here writes to either strategy DB. Classification
+    replaces the three ad hoc collision/main_ghost/atr_ghost checks this used
+    to run so both this script and scripts/reconcile_positions.py share one
+    vetted classifier (reconciliation/classifier.py) instead of drifting."""
+    non_match = [(sym, m, a, b, cls) for sym, m, a, b, cls in position_rows
+                 if cls != Classification.MATCH]
+
+    if non_match:
+        detail = "; ".join(
+            f"{s}: main={m} atr={a} broker={b} -> {cls.value}" for s, m, a, b, cls in non_match
+        )
+        rrepo.record_reconciliation(ts, "position_classification", "FAIL", detail=detail)
+    else:
+        rrepo.record_reconciliation(ts, "position_classification", "PASS")
+
+    for sym, m, a, b, cls in non_match:
+        severity = _ALERT_SEVERITY.get(cls, "WARNING")
         rrepo.record_alert(
-            ts, "CRITICAL", "position_collision",
-            f"{len(collisions)} symbol(s) where main_qty+momentum_atr_qty != broker_qty: {detail}",
+            ts, severity, cls.value,
+            f"{sym}: main={m} atr={a} broker={b} classified {cls.value}",
             "observability_snapshot.py",
         )
-    else:
-        rrepo.record_reconciliation(ts, "position_collision_sum", "PASS")
-
-    main_ghost = [s for s, m, a, b in position_rows if m > 0 and b == 0 and a == 0]
-    if main_ghost:
-        rrepo.record_reconciliation(
-            ts, "main_vs_broker", "WARNING", strategy_id="main",
-            detail=f"DB open, broker has none: {main_ghost}",
-        )
-    else:
-        rrepo.record_reconciliation(ts, "main_vs_broker", "PASS", strategy_id="main")
-
-    atr_ghost = [s for s, m, a, b in position_rows if a > 0 and b == 0 and m == 0]
-    if atr_ghost:
-        rrepo.record_reconciliation(
-            ts, "momentum_atr_vs_broker", "WARNING", strategy_id="momentum_atr",
-            detail=f"DB open, broker has none: {atr_ghost}",
-        )
-        rrepo.record_alert(
-            ts, "WARNING", "momentum_atr_ghost_position",
-            f"momentum_atr DB shows open position(s) the broker doesn't have: {atr_ghost}",
-            "observability_snapshot.py", strategy_id="momentum_atr",
-        )
-    else:
-        rrepo.record_reconciliation(ts, "momentum_atr_vs_broker", "PASS", strategy_id="momentum_atr")
 
 
 def main():
