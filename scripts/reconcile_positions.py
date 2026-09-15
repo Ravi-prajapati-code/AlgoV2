@@ -192,7 +192,13 @@ def run_reconcile():
         logger.error("Classification logging failed (non-fatal, does not affect reconciliation): %s", e)
 
     broker_syms = {p.symbol for p in broker_positions}
-    db_syms = {p.symbol for p in db_positions}
+    # MAIN positions opened on/after MAIN_STRATEGY_PAPER_SINCE are paper-
+    # simulated -- never reached the broker -- so they must not feed the
+    # ghost/unknown check below any more than they feed log_classifications()
+    # above (same filter + rationale, see the comment there). Without this,
+    # GOLDBEES.NS (paper entry 2026-09-07) false-alerts as a ghost every run.
+    real_db_positions = [p for p in db_positions if p.entry_date < MAIN_STRATEGY_PAPER_SINCE]
+    db_syms = {p.symbol for p in real_db_positions}
     momentum_atr_syms = {p.symbol for p in atr_positions}
 
     ghost = db_syms - broker_syms                            # DB open, broker doesn't have it — alert only

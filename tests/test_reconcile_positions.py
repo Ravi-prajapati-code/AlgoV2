@@ -88,3 +88,45 @@ def test_log_classifications_keeps_pre_cutover_main_qty(reconciler):
     assert len(rows) == 1
     assert rows[0]["result"] == "FAIL"
     assert f"ASIANENE.NS: main=8 atr=8 broker=0 -> {Classification.GHOST_DB_POSITION.value}" in rows[0]["detail"]
+
+
+def test_run_reconcile_ghost_excludes_post_cutover_main_paper(reconciler, monkeypatch, capsys):
+    """Regression for the real GOLDBEES.NS false ghost alert (fired daily
+    2026-09-07 through 2026-09-15): log_classifications() already excluded
+    post-cutover MAIN paper positions from its own ownership math (tests
+    above), but run_reconcile()'s actual ghost/unknown check -- the one that
+    sends the Telegram alert and sys.exit(2)s -- used raw, unfiltered
+    db_positions. A paper-only MAIN position with no broker/atr holdings
+    must not trip that path."""
+    db_positions = [_pos("GOLDBEES.NS", 102, entry_date=date(2026, 9, 7))]  # after cutover
+
+    monkeypatch.setattr(reconciler, "get_broker_positions", lambda: [])
+    monkeypatch.setattr("db.repository.load_positions", lambda status: db_positions)
+    monkeypatch.setattr("db.momentum_atr_repo.load_positions", lambda status: [])
+    sent = []
+    monkeypatch.setattr(reconciler, "_send", lambda msg: sent.append(msg))
+
+    reconciler.run_reconcile()  # must return normally, not sys.exit(2)
+
+    assert not sent
+    assert "OK" in capsys.readouterr().out
+
+
+def test_run_reconcile_ghost_still_fires_pre_cutover(reconciler, monkeypatch):
+    """Guard against the fix above becoming too broad: a pre-cutover MAIN
+    position (real, per-position date rule regardless of MAIN's current
+    live-trading flag) with no broker holdings must still trip the real
+    ghost alert and sys.exit(2)."""
+    db_positions = [_pos("ASIANENE.NS", 8, entry_date=date(2026, 8, 27))]  # before cutover
+
+    monkeypatch.setattr(reconciler, "get_broker_positions", lambda: [])
+    monkeypatch.setattr("db.repository.load_positions", lambda status: db_positions)
+    monkeypatch.setattr("db.momentum_atr_repo.load_positions", lambda status: [])
+    sent = []
+    monkeypatch.setattr(reconciler, "_send", lambda msg: sent.append(msg))
+
+    with pytest.raises(SystemExit) as exc_info:
+        reconciler.run_reconcile()
+
+    assert exc_info.value.code == 2
+    assert any("ASIANENE" in m for m in sent)
