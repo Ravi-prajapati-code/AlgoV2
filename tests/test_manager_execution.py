@@ -12,7 +12,7 @@ import portfolio.manager as pm_module
 from portfolio.manager import PortfolioManager
 from db.models import Position, Signal
 from db.repository import init_db, load_positions, save_position
-from broker.base import OrderResult, OrderStatus, OrderSide, OrderType
+from broker.base import OrderResult, OrderStatus, OrderSide, OrderType, LivePosition
 from config.settings import SAFE_HAVEN_SYMBOL
 
 TODAY = date(2026, 7, 2)
@@ -428,3 +428,95 @@ def test_unverified_gtt_cancel_blocks_sell():
                     if o.symbol == "ABC.NS" and o.side == OrderSide.SELL and not o.is_gtt]
     assert market_sells == []  # must abort rather than sell alongside an unverified stale GTT
     assert any(p.symbol == "ABC.NS" for p in mgr.open_positions)  # position left open
+
+
+def _fake_fast_clock(monkeypatch):
+    """_await_order_completion's poll loop checks wall-clock time.time(),
+    not just time.sleep() -- mocking sleep alone still busy-loops for the
+    full 30s timeout. Advance the fake clock past timeout after the first
+    poll so status-never-resolves tests run instantly."""
+    import time
+    calls = {"n": 0}
+
+    def fake_time():
+        calls["n"] += 1
+        return 0.0 if calls["n"] <= 2 else 999.0
+
+    monkeypatch.setattr(time, "time", fake_time)
+    monkeypatch.setattr(time, "sleep", lambda s: None)
+
+
+class FlakyStatusBroker(FakeBroker):
+    """FakeBroker variant whose get_order_status() never reaches a terminal
+    state (mirrors the ASIANENE.NS incident: order/details lookup broken for
+    the rest of the day even though the fill actually happened). Holdings
+    are updated on placement to simulate the real broker-side fill that the
+    status endpoint fails to report, so _self_heal_via_holdings has a real
+    qty delta to confirm against."""
+
+    def __init__(self, holdings_qty, ltp, **kwargs):
+        super().__init__(**kwargs)
+        self.holdings_qty = dict(holdings_qty)
+        self.ltp = ltp
+
+    def get_order_status(self, order_id):
+        return OrderResult(order_id=order_id, status=OrderStatus.UNKNOWN,
+                            symbol="", side=OrderSide.SELL, requested_qty=0,
+                            avg_price=0.0, raw_response={})
+
+    def place_order_with_retry(self, req):
+        res = super().place_order_with_retry(req)
+        delta = req.quantity if req.side == OrderSide.BUY else -req.quantity
+        self.holdings_qty[req.symbol] = self.holdings_qty.get(req.symbol, 0) + delta
+        return res
+
+    def get_holdings_or_none(self):
+        return [LivePosition(symbol=s, quantity=q, avg_price=0.0, ltp=self.ltp, pnl=0.0, product="D")
+                for s, q in self.holdings_qty.items()]
+
+    def get_ltp(self, symbol):
+        return self.ltp
+
+
+def test_self_heal_confirms_sell_when_status_never_resolves(monkeypatch):
+    """Regression for the ASIANENE.NS incident, ported to MAIN (docs/69's
+    "known gap left open", closed 2026-09-22): get_order_status() never
+    reaches COMPLETE, but broker holdings drop by exactly sell_qty --
+    must close the position rather than leave it OPEN forever."""
+    _fake_fast_clock(monkeypatch)
+    sent = []
+    monkeypatch.setattr("notifications.telegram.send_message",
+                         lambda msg, *a, **k: sent.append(msg))
+
+    pos = make_position(symbol="ABC.NS", shares=10)
+    broker = FlakyStatusBroker(holdings_qty={"ABC.NS": 10}, ltp=110.0)
+    mgr = make_manager(broker, [pos])
+    sell_sig = Signal(
+        date=TODAY, symbol="ABC.NS", action="SELL",
+        score=0, price=105.0, reason="TREND_BREAK",
+    )
+
+    mgr.process_signals(TODAY, signals=[sell_sig], prices={"ABC.NS": 105.0},
+                         indicators={"ABC.NS": {"atr": 1.0}}, regime="BULL")
+
+    assert not any(p.symbol == "ABC.NS" for p in mgr.open_positions), \
+        "self-heal should have confirmed the fill via broker holdings"
+    assert any("self-healed" in m for m in sent)
+
+
+def test_self_heal_confirms_buy_when_status_never_resolves(monkeypatch):
+    """Same regression, BUY side: initial entry order status never resolves,
+    but broker holdings show the exact expected qty appear -- must open the
+    position rather than silently drop the trade."""
+    _fake_fast_clock(monkeypatch)
+    monkeypatch.setattr("notifications.telegram.send_message", lambda *a, **k: True)
+
+    broker = FlakyStatusBroker(holdings_qty={}, ltp=150.0, cash=100000.0, portfolio_value=100000.0)
+    mgr = make_manager(broker, [])
+
+    mgr.process_signals(TODAY, signals=[_buy_signal()], prices={"XYZ.NS": 150.0},
+                         indicators={"XYZ.NS": {"atr": 2.0, "composite_rank": 95}},
+                         regime="BULL")
+
+    assert any(p.symbol == "XYZ.NS" for p in mgr.open_positions), \
+        "self-heal should have confirmed the buy fill via broker holdings"

@@ -246,6 +246,86 @@ class PortfolioManager:
             logger.warning(f"  [Live] Timeout waiting for order {order_id}. Current status: {res.status}")
         return res
 
+    def _pre_order_holdings_qty(self, symbol: str):
+        """Best-effort broker-holdings snapshot before placing an order --
+        feeds _self_heal_via_holdings' before/after comparison. None on
+        failure just disables self-heal for that one order, same as not
+        having this fix at all; never blocks the order itself."""
+        if not self.broker:
+            return None
+        try:
+            holdings = self.broker.get_holdings_or_none()
+        except Exception:
+            return None
+        if holdings is None:
+            return None
+        return {h.symbol: h.quantity for h in holdings}.get(symbol, 0)
+
+    def _self_heal_via_holdings(self, side: str, symbol: str, qty: int, pre_qty, res):
+        """Last-resort fallback when _await_order_completion() exhausts its
+        retry window without a terminal status. Ported from
+        momentum_atr/execution.py's _self_heal_via_holdings (docs/69's
+        "known gap left open", closed 2026-09-22) -- this class's own await
+        loop above already retries correctly through UNKNOWN/PENDING, it
+        just had nothing to fall back on when the window still runs out
+        anyway (the ASIANENE.NS failure mode, momentum_atr side, 2026-09-16).
+        Compares broker holdings before/after against the EXACT expected
+        qty delta -- only an exact match is trusted, so an unrelated
+        holdings change (a manual trade, a different order) can never be
+        misread as this order's fill. Real avg_price is unrecoverable
+        without a working status lookup, so this uses live LTP and flags
+        the fill for manual verification via Telegram."""
+        from broker.base import OrderResult, OrderSide, OrderStatus
+        if pre_qty is None or not self.broker:
+            return None
+        try:
+            holdings = self.broker.get_holdings_or_none()
+        except Exception:
+            return None
+        if holdings is None:
+            return None
+        post_qty = {h.symbol: h.quantity for h in holdings}.get(symbol, 0)
+        expected = pre_qty + qty if side == "BUY" else pre_qty - qty
+        if post_qty != expected:
+            return None
+        ltp = self.broker.get_ltp(symbol)
+        if not ltp or ltp <= 0:
+            return None
+        order_id = getattr(res, "order_id", "") if res else ""
+        logger.warning(
+            "[SelfHeal] %s %s x%d: order status never confirmed (order_id=%s), "
+            "but broker holdings moved %d -> %d exactly as expected -- "
+            "treating as COMPLETE at LTP=%.2f.",
+            side, symbol, qty, order_id, pre_qty, post_qty, ltp,
+        )
+        try:
+            from notifications.telegram import send_message
+            send_message(
+                f"⚠️ <b>MAIN self-healed</b> — {side} {symbol} x{qty}\n"
+                f"Order status never confirmed (order_id={order_id}) but broker "
+                f"holdings confirm the fill exactly ({pre_qty}->{post_qty}). "
+                f"Ledger updated at LTP=₹{ltp:.2f} (real fill price unrecoverable) "
+                f"-- verify manually."
+            )
+        except Exception:
+            pass
+        return OrderResult(
+            order_id=order_id, status=OrderStatus.COMPLETE, symbol=symbol,
+            side=OrderSide.BUY if side == "BUY" else OrderSide.SELL,
+            requested_qty=qty, filled_qty=qty, avg_price=ltp,
+        )
+
+    def _await_order_completion_healed(self, res, side: str, symbol: str, qty: int, pre_qty):
+        """Await terminal status, then fall back to _self_heal_via_holdings
+        when it never arrives. Callers must snapshot pre_qty via
+        _pre_order_holdings_qty() BEFORE placing the order."""
+        from broker.base import OrderStatus
+        final = self._await_order_completion(res.order_id)
+        if final is not None and final.status == OrderStatus.COMPLETE:
+            return final
+        healed = self._self_heal_via_holdings(side, symbol, qty, pre_qty, final or res)
+        return healed if healed is not None else final
+
     def account_value(self, prices: dict) -> float:
         """Total broker account value — every position (any origin) + cash.
         Reporting/net-worth only, never a sizing or risk denominator — see
@@ -338,13 +418,14 @@ class PortfolioManager:
                         if add_shares > 0:
                             if self.broker:
                                 from broker.base import OrderRequest, OrderSide, OrderType, OrderStatus
+                                pre_qty = self._pre_order_holdings_qty(recv.symbol)
                                 req = OrderRequest(
                                     symbol=recv.symbol, side=OrderSide.BUY,
                                     quantity=add_shares, order_type=OrderType.MARKET,
                                 )
                                 res = self.broker.place_order_with_retry(req)
                                 if res.order_id:
-                                    res = self._await_order_completion(res.order_id)
+                                    res = self._await_order_completion_healed(res, "BUY", recv.symbol, add_shares, pre_qty)
                                 if res.status != OrderStatus.COMPLETE:
                                     logger.error(f"  [Live] SCORE-DROP-ADD failed for {recv.symbol}: {res.status}")
                                     add_shares = 0
@@ -412,13 +493,14 @@ class PortfolioManager:
                         if add_shares > 0:
                             if self.broker:
                                 from broker.base import OrderRequest, OrderSide, OrderType, OrderStatus
+                                pre_qty = self._pre_order_holdings_qty(best.symbol)
                                 req = OrderRequest(
                                     symbol=best.symbol, side=OrderSide.BUY,
                                     quantity=add_shares, order_type=OrderType.MARKET,
                                 )
                                 res = self.broker.place_order_with_retry(req)
                                 if res.order_id:
-                                    res = self._await_order_completion(res.order_id)
+                                    res = self._await_order_completion_healed(res, "BUY", best.symbol, add_shares, pre_qty)
                                 if res.status != OrderStatus.COMPLETE:
                                     logger.error(f"  [Live] RIDE_ADD failed for {best.symbol}: {res.status}")
                                     add_shares = 0
@@ -481,13 +563,14 @@ class PortfolioManager:
                         if add_shares > 0:
                             if self.broker:
                                 from broker.base import OrderRequest, OrderSide, OrderType, OrderStatus
+                                pre_qty = self._pre_order_holdings_qty(best.symbol)
                                 req = OrderRequest(
                                     symbol=best.symbol, side=OrderSide.BUY,
                                     quantity=add_shares, order_type=OrderType.MARKET,
                                 )
                                 res = self.broker.place_order_with_retry(req)
                                 if res.order_id:
-                                    res = self._await_order_completion(res.order_id)
+                                    res = self._await_order_completion_healed(res, "BUY", best.symbol, add_shares, pre_qty)
                                 if res.status != OrderStatus.COMPLETE:
                                     logger.error(f"  [Live] ROTATE_ADD failed for {best.symbol}: {res.status}")
                                     add_shares = 0
@@ -709,6 +792,7 @@ class PortfolioManager:
                                 continue
 
                             logger.info(f"  [Live] Placing MARKET BUY for {sig.symbol} (Qty: {shares})")
+                            pre_qty = self._pre_order_holdings_qty(sig.symbol)
                             req = OrderRequest(
                                 symbol=sig.symbol, side=OrderSide.BUY, quantity=shares,
                                 order_type=OrderType.MARKET,
@@ -719,10 +803,11 @@ class PortfolioManager:
                                 continue
 
                             # Await fill to capture the actual entry price (mirrors ADD/SELL).
-                            # If still PENDING/timed-out, fall back to estimate and let the
+                            # Falls back to _self_heal_via_holdings if status never confirms;
+                            # if that also can't prove the fill, uses estimate and lets the
                             # next-run broker sync reconcile shares/price from holdings.
                             if res.order_id:
-                                res = self._await_order_completion(res.order_id)
+                                res = self._await_order_completion_healed(res, "BUY", sig.symbol, shares, pre_qty)
                             if res.status == OrderStatus.REJECTED:
                                 logger.error(f"  [Live] BUY rejected after await for {sig.symbol}: {res.rejection_reason}")
                                 continue
@@ -812,13 +897,14 @@ class PortfolioManager:
                         if self.broker:
                             from broker.base import OrderRequest, OrderSide, OrderType, OrderStatus
                             logger.info(f"  [Live] Placing MARKET ADD for {best_pos.symbol} (Qty: {add_shares})")
+                            pre_qty = self._pre_order_holdings_qty(best_pos.symbol)
                             req = OrderRequest(
                                 symbol=best_pos.symbol, side=OrderSide.BUY,
                                 quantity=add_shares, order_type=OrderType.MARKET,
                             )
                             res = self.broker.place_order_with_retry(req)
                             if res.order_id:
-                                res = self._await_order_completion(res.order_id)
+                                res = self._await_order_completion_healed(res, "BUY", best_pos.symbol, add_shares, pre_qty)
                             if res.status != OrderStatus.COMPLETE:
                                 logger.error(f"  [Live] ADD failed for {best_pos.symbol}: {res.status} | {res.rejection_reason}")
                                 add_shares = 0  # skip local state update; fall through to snapshot
@@ -951,13 +1037,14 @@ class PortfolioManager:
                 f"  [Live] Placing MARKET SELL for {pos.symbol} "
                 f"(Qty: {sell_qty}{' partial of ' + str(pos.shares) if is_partial else ''})"
             )
+            pre_qty = self._pre_order_holdings_qty(pos.symbol)
             req = OrderRequest(
                 symbol=pos.symbol, side=OrderSide.SELL, quantity=sell_qty,
                 order_type=OrderType.MARKET,
             )
             res = self.broker.place_order_with_retry(req)
             if res.order_id:
-                res = self._await_order_completion(res.order_id)
+                res = self._await_order_completion_healed(res, "SELL", pos.symbol, sell_qty, pre_qty)
             if res.status not in (OrderStatus.COMPLETE, OrderStatus.OPEN, OrderStatus.PENDING, OrderStatus.PARTIAL):
                 logger.error(f"  [Live] SELL failed for {pos.symbol}: {res.status} | {res.rejection_reason}")
                 return
