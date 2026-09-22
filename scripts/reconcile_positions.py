@@ -46,7 +46,7 @@ logger = logging.getLogger("reconciler")
 
 import requests
 from config.settings import TELEGRAM_BOT_TOKEN, TELEGRAM_CHAT_ID, MAIN_STRATEGY_PAPER_SINCE
-from reconciliation.classifier import Classification, classify
+from reconciliation.classifier import BLOCKING_CLASSIFICATIONS, Classification, classify
 
 
 def _send(msg: str):
@@ -158,6 +158,22 @@ def log_classifications(now_str: str, broker_positions, db_positions, atr_positi
     if non_match:
         detail = "; ".join(f"{s}: main={m} atr={a} broker={b} -> {c.value}" for s, m, a, b, c, _ in non_match)
         rrepo.record_reconciliation(ts, "position_classification", "FAIL", detail=detail)
+        # This used to be the ONLY place a QUANTITY_MISMATCH/DUPLICATE_OWNERSHIP/
+        # OWNERSHIP_CONFLICT/RECONCILIATION_ERROR finding went -- a reporting.db
+        # row nobody sees without opening the dashboard. The coarse ghost/unknown
+        # check below (symbol-set membership only) can't catch these: they need
+        # a symbol present on BOTH sides with a quantity that doesn't add up
+        # (the real CYIENT.NS incident this classifier's docstring documents --
+        # main=0 atr=6 broker=3 -- was never a "symbol missing from one side"
+        # case, so the ghost/unknown alert would never have caught it either).
+        paging = [(s, c) for s, m, a, b, c, _ in non_match if c in BLOCKING_CLASSIFICATIONS]
+        if paging:
+            lines = "\n".join(f"  • {s}: {c.value}" for s, c in paging)
+            _send(
+                f"⚠️ <b>Position Classification Alert — {now_str}</b>\n{lines}\n"
+                "<i>Quantity-level ledger/broker mismatch -- not auto-fixed, "
+                "check logs/reconcile.log or the reconciliation dashboard.</i>"
+            )
     else:
         rrepo.record_reconciliation(ts, "position_classification", "PASS")
 
@@ -201,11 +217,20 @@ def run_reconcile():
     db_syms = {p.symbol for p in real_db_positions}
     momentum_atr_syms = {p.symbol for p in atr_positions}
 
-    ghost = db_syms - broker_syms                            # DB open, broker doesn't have it — alert only
-    # momentum_atr_syms excluded so a symbol only momentum_atr bought never
-    # looks like a "broker-only unknown position" and gets auto-inserted into
-    # MAIN's trading.db -- corrupting it, not just false-alerting (shared-
-    # broker fungibility, see CYIENT incident 2026-09).
+    # Ghost check spans BOTH ledgers -- a momentum_atr-only ghost (DB open,
+    # broker doesn't have it) is exactly as real a failed-sell signal as a
+    # MAIN one and must not go unflagged. Previously this only checked
+    # db_syms (MAIN), which meant a momentum_atr ghost was silently
+    # invisible here (ASIANENE.NS, 2026-09-16: RANK_RULE_EXIT sell filled
+    # live, get_order_status() 404'd, ledger never updated -- this script
+    # ran clean every day after because momentum_atr_syms wasn't in either
+    # side of the ghost comparison).
+    ghost = (db_syms | momentum_atr_syms) - broker_syms       # DB open, broker doesn't have it — alert only
+    # momentum_atr_syms excluded from `unknown` only (not `ghost` above) so
+    # a symbol only momentum_atr bought never looks like a "broker-only
+    # unknown position" and gets auto-inserted into MAIN's trading.db --
+    # corrupting it, not just false-alerting (shared-broker fungibility,
+    # see CYIENT incident 2026-09).
     unknown = broker_syms - db_syms - momentum_atr_syms       # Broker holds, neither ledger knows — auto-fixed below
 
     logger.info("DB open: %s", db_syms)

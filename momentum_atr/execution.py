@@ -56,15 +56,18 @@ MAX_BUY_CHARGE_RATE = 0.032  # reserve ~3.2% of budget for buy-side charges
 
 
 def _await_order_completion(broker: BaseBroker, order_id: str) -> Optional[OrderResult]:
+    # UNKNOWN means the status lookup itself failed (e.g. HTTP error/404) --
+    # this can be transient (ASIANENE.NS, 2026-09-16: order/details 404'd on
+    # the very first poll right after placement, immediately after a real
+    # live fill) so it must NOT be treated as terminal. Keep polling through
+    # the full timeout window like PENDING/OPEN; only return early on a
+    # status the broker actually reports as final.
     elapsed = 0
     res = None
     while elapsed < AWAIT_TIMEOUT_SEC:
         res = broker.get_order_status(order_id)
-        # UNKNOWN means the status lookup itself failed (e.g. order not
-        # found) -- broker will never resolve this, so stop polling instead
-        # of burning the full timeout window on a dead order_id.
         if res.status in (OrderStatus.COMPLETE, OrderStatus.REJECTED,
-                          OrderStatus.CANCELLED, OrderStatus.UNKNOWN):
+                          OrderStatus.CANCELLED):
             return res
         time.sleep(AWAIT_POLL_SEC)
         elapsed += AWAIT_POLL_SEC
@@ -80,12 +83,22 @@ def _confirmed_fill(broker: BaseBroker, side: str, symbol: str, qty: int,
     if dry_run:
         plan.append({"side": side, "symbol": symbol, "qty": qty})
         return None
+    # Snapshot broker holdings before placing, for the self-heal fallback
+    # below. Best-effort -- if this call fails, pre_qty stays None and
+    # self-heal is simply skipped (no worse than before this fix existed).
+    try:
+        pre_qty = {h.symbol: h.quantity for h in broker.get_holdings()}.get(symbol, 0)
+    except Exception:
+        pre_qty = None
     res = broker.buy(symbol, qty) if side == "BUY" else broker.sell(symbol, qty)
     if not res.order_id:
         send_error_alert(f"momentum_atr: {side} {symbol} x{qty} -- no order_id, not retried further this run")
         return None
     final = _await_order_completion(broker, res.order_id)
     if final is None or final.status != OrderStatus.COMPLETE:
+        healed = _self_heal_via_holdings(broker, side, symbol, qty, pre_qty, res)
+        if healed is not None:
+            return healed
         send_error_alert(f"momentum_atr: {side} {symbol} x{qty} did not complete "
                           f"(status={final.status if final else 'unknown'}) -- ledger left unchanged")
         return None
@@ -94,6 +107,47 @@ def _confirmed_fill(broker: BaseBroker, side: str, symbol: str, qty: int,
                           "-- treated as unresolved, ledger left unchanged")
         return None
     return final
+
+
+def _self_heal_via_holdings(broker: BaseBroker, side: str, symbol: str, qty: int,
+                             pre_qty: Optional[int], res: OrderResult) -> Optional[OrderResult]:
+    """Last-resort fallback when get_order_status() never reaches a terminal
+    status even after the full retry window (ASIANENE.NS, 2026-09-16: the
+    order/details lookup 404'd for the rest of that trading day, so no
+    amount of polling within one run would have recovered it). Compares
+    broker holdings before/after against the exact expected qty delta --
+    only an EXACT match is trusted, so an unrelated holdings change (a
+    manual trade, a different order) can never be misread as this order's
+    fill. Real avg_price is unrecoverable without a working status/trade
+    lookup, so this uses live LTP and flags the fill for manual price
+    verification via the alert."""
+    if pre_qty is None:
+        return None
+    try:
+        post_qty = {h.symbol: h.quantity for h in broker.get_holdings()}.get(symbol, 0)
+    except Exception:
+        return None
+    expected = pre_qty + qty if side == "BUY" else pre_qty - qty
+    if post_qty != expected:
+        return None
+    ltp = broker.get_ltp(symbol)
+    if not ltp or ltp <= 0:
+        return None
+    logger.warning(
+        "[SelfHeal] %s %s x%d: get_order_status never confirmed (order_id=%s), "
+        "but broker holdings moved %d -> %d exactly as expected -- treating as "
+        "COMPLETE at LTP=%.2f.", side, symbol, qty, res.order_id, pre_qty, post_qty, ltp,
+    )
+    send_error_alert(
+        f"momentum_atr: {side} {symbol} x{qty} SELF-HEALED -- order status never "
+        f"confirmed (order_id={res.order_id}) but broker holdings confirm the fill "
+        f"exactly ({pre_qty}->{post_qty}). Ledger updated at LTP={ltp:.2f} "
+        f"(real fill price unrecoverable) -- verify manually."
+    )
+    return OrderResult(
+        order_id=res.order_id, status=OrderStatus.COMPLETE, symbol=symbol,
+        side=res.side, requested_qty=qty, filled_qty=qty, avg_price=ltp,
+    )
 
 
 def _greedy_fill(cash: float, priority_syms: List[str], closes: Dict[str, float]) -> Tuple[float, Dict[str, int]]:

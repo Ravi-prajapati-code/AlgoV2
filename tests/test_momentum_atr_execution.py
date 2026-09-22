@@ -21,19 +21,23 @@ import pytest
 
 sys.path.insert(0, "scripts/momentum_atr_experiment")
 
-from broker.base import BaseBroker, LivePosition, OrderResult, OrderStatus
+from broker.base import BaseBroker, LivePosition, OrderRequest, OrderResult, OrderSide, OrderStatus
 from momentum_atr.models import Position
 
 
 # ── scoring parity vs the backtest source ───────────────────────────────
 
-def _synthetic_ohlcv(seed: int, n: int = 80) -> pd.DataFrame:
+def _synthetic_ohlcv(seed: int, n: int = 80, avg_volume: float = 1_000_000.0) -> pd.DataFrame:
+    """avg_volume defaults comfortably above scoring.py's MIN_AVG_VOLUME_20D
+    (300k) floor -- these tests exercise the score formula itself, not the
+    volume gate (see test_scoring_excludes_below_volume_floor for that)."""
     rng = np.random.default_rng(seed)
     close = 100 + np.cumsum(rng.normal(0.3, 1.5, n))
     high = close + rng.uniform(0.1, 2.0, n)
     low = close - rng.uniform(0.1, 2.0, n)
+    volume = rng.uniform(avg_volume * 0.9, avg_volume * 1.1, n)
     idx = pd.date_range("2026-01-01", periods=n, freq="D")
-    return pd.DataFrame({"close": close, "high": high, "low": low}, index=idx)
+    return pd.DataFrame({"close": close, "high": high, "low": low, "volume": volume}, index=idx)
 
 
 def test_scoring_matches_backtest_engine_formula(monkeypatch):
@@ -68,7 +72,8 @@ def test_scoring_forces_zero_on_negative_momentum(monkeypatch):
     n = 80
     idx = pd.date_range("2026-01-01", periods=n, freq="D")
     close = 100 - np.arange(n) * 0.5  # steadily declining -> momentum < 0 throughout
-    df = pd.DataFrame({"close": close, "high": close + 3.0, "low": close - 3.0}, index=idx)
+    df = pd.DataFrame({"close": close, "high": close + 3.0, "low": close - 3.0,
+                        "volume": np.full(n, 1_000_000.0)}, index=idx)
 
     monkeypatch.setattr("data.fetcher.fetch_all", lambda symbols, live_mode=True: {"DOWN": df})
     scores, _ = compute_live_scores(["DOWN"])
@@ -90,6 +95,32 @@ def test_scoring_drops_short_history(monkeypatch):
     scores, closes = compute_live_scores(["SHORT"])
     assert "SHORT" not in scores
     assert "SHORT" not in closes
+
+
+def test_scoring_excludes_below_volume_floor(monkeypatch):
+    """MIN_AVG_VOLUME_20D=300k floor (docs/61 addendum, 2026-09-02,
+    c3324f9) had zero test coverage -- a symbol with real positive momentum
+    but thin 20d avg volume must still be excluded entirely, matching a
+    too-short-history exclusion (not scored as 0, dropped from the dict)."""
+    from momentum_atr.scoring import compute_live_scores
+
+    thin = _synthetic_ohlcv(seed=2, avg_volume=100_000.0)  # below the 300k floor
+    monkeypatch.setattr("data.fetcher.fetch_all", lambda symbols, live_mode=True: {"THIN": thin})
+    scores, closes = compute_live_scores(["THIN"])
+    assert "THIN" not in scores
+    assert "THIN" not in closes
+
+
+def test_scoring_includes_above_volume_floor(monkeypatch):
+    """Guard against the fix above becoming too broad: a symbol comfortably
+    above the 300k floor with positive momentum must still be scored."""
+    from momentum_atr.scoring import compute_live_scores
+
+    liquid = _synthetic_ohlcv(seed=2, avg_volume=1_000_000.0)
+    monkeypatch.setattr("data.fetcher.fetch_all", lambda symbols, live_mode=True: {"LIQUID": liquid})
+    scores, closes = compute_live_scores(["LIQUID"])
+    assert "LIQUID" in scores
+    assert "LIQUID" in closes
 
 
 def test_rank_symbols_excludes_nonpositive_scores():
@@ -159,6 +190,43 @@ class FakeBroker(BaseBroker):
         at" to model; test_sizing_uses_live_quote_not_stale_close below is
         the one test that deliberately makes them differ."""
         return self.prices.get(symbol, 0.0)
+
+
+class FlakyStatusBroker(FakeBroker):
+    """FakeBroker variant whose get_order_status() returns UNKNOWN for the
+    first `unknown_polls` calls (or forever, if -1) before revealing the
+    real terminal status -- models the ASIANENE.NS incident (2026-09-16):
+    order/details 404'd immediately after a real live fill. place_order()
+    also mutates self.holdings like a real broker would, so the self-heal
+    fallback's before/after comparison has a real fill to detect."""
+
+    def __init__(self, prices, cash=10_000_000, holdings=None, unknown_polls=0):
+        super().__init__(prices, cash=cash, holdings=holdings)
+        self.unknown_polls = unknown_polls
+        self._poll_counts = {}
+
+    def place_order(self, request):
+        res = super().place_order(request)
+        held = {h.symbol: h.quantity for h in self.holdings}
+        delta = request.quantity if request.side == OrderSide.BUY else -request.quantity
+        held[request.symbol] = held.get(request.symbol, 0) + delta
+        self.holdings = [
+            LivePosition(symbol=s, quantity=q, avg_price=self.prices.get(s, 0.0),
+                         ltp=self.prices.get(s, 0.0), pnl=0.0, product="CNC")
+            for s, q in held.items() if q > 0
+        ]
+        return res
+
+    def get_order_status(self, order_id):
+        n = self._poll_counts.get(order_id, 0)
+        self._poll_counts[order_id] = n + 1
+        if self.unknown_polls < 0 or n < self.unknown_polls:
+            real = self._orders[order_id]
+            return OrderResult(order_id=order_id, status=OrderStatus.UNKNOWN,
+                                symbol=real.symbol, side=real.side,
+                                requested_qty=real.requested_qty,
+                                rejection_reason="test-forced-unknown")
+        return self._orders[order_id]
 
 
 TODAY = date(2026, 8, 6)
@@ -484,3 +552,47 @@ def test_sizing_uses_live_quote_not_stale_close(momentum_atr_env):
         "sizing against the stale precompute close instead of broker.get_ltp() "
         f"drove the ledger negative: {summary}"
     )
+
+
+def test_await_order_completion_retries_through_transient_unknown(momentum_atr_env, monkeypatch):
+    """Regression for the ASIANENE.NS incident (2026-09-16): the real sell
+    filled live, but get_order_status() 404'd (-> UNKNOWN) on the very first
+    poll right after placement. The old code treated UNKNOWN as terminal and
+    gave up immediately instead of retrying through the timeout window like
+    PENDING/OPEN -- so a transient lookup failure right after a real fill
+    was permanently misread as "never resolved". Must keep polling and pick
+    up the real COMPLETE once the lookup recovers."""
+    execution, _repo, _sent = momentum_atr_env
+    monkeypatch.setattr(execution.time, "sleep", lambda s: None)
+
+    broker = FlakyStatusBroker({"A": 100.0}, unknown_polls=2)
+    placed = broker.place_order(OrderRequest(symbol="A", side=OrderSide.BUY, quantity=10))
+
+    final = execution._await_order_completion(broker, placed.order_id)
+
+    assert final is not None
+    assert final.status == OrderStatus.COMPLETE
+
+
+def test_self_heal_via_broker_holdings_when_status_never_resolves(momentum_atr_env, monkeypatch):
+    """Regression for the ASIANENE.NS incident (2026-09-16 through
+    2026-09-22): get_order_status() never recovered for the rest of that
+    trading day, so no amount of in-run polling would have confirmed the
+    sell -- the ledger stayed OPEN for 6 days with real sale proceeds never
+    credited, and reconcile_positions.py had a separate bug that hid the
+    resulting ghost from the daily alert. As a last resort before giving up,
+    a fill that broker holdings confirm exactly (qty delta matches) must be
+    treated as COMPLETE (at live LTP, since the real fill price is
+    unrecoverable) rather than left unresolved forever."""
+    execution, repo, sent = momentum_atr_env
+    monkeypatch.setattr(execution.time, "sleep", lambda s: None)
+
+    holdings = _seed_positions(repo, ["A"], entry_price=100.0)
+    pos = repo.get_position("A")
+    broker = FlakyStatusBroker({"A": 110.0}, holdings=holdings, unknown_polls=-1)
+
+    proceeds = execution._execute_sell(broker, pos, "TEST_EXIT", {"A": 110.0}, False, [])
+
+    assert proceeds is not None, "self-heal should have confirmed the fill via broker holdings"
+    assert repo.get_position("A") is None
+    assert any(kind == "error" and "SELF-HEALED" in msg for kind, msg in sent)
