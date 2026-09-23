@@ -596,3 +596,44 @@ def test_self_heal_via_broker_holdings_when_status_never_resolves(momentum_atr_e
     assert proceeds is not None, "self-heal should have confirmed the fill via broker holdings"
     assert repo.get_position("A") is None
     assert any(kind == "error" and "SELF-HEALED" in msg for kind, msg in sent)
+
+
+def test_topup_fills_empty_slots_when_under_target(momentum_atr_env):
+    """Regression, 2026-09-23: after an exit leaves 1-2 positions open with
+    no SWAP/RANK_EXIT trigger firing on the remaining holding (still ranks
+    fine, no -3%/+3% spread), nothing previously could ever open a new name
+    to fill the empty slot(s) -- idle cash sat there indefinitely (WELCORP.NS
+    left as the sole holding since a 2026-09-16 RANK_RULE_EXIT, 7 sessions,
+    ~88% of equity in cash with no code path able to redeploy it)."""
+    execution, repo, _sent = momentum_atr_env
+    holdings = _seed_positions(repo, ["A"])
+    repo.update_state(cash=1000.0, peak_equity=2000.0)
+
+    today_closes = {"A": 100.5, "B": 100.5, "C": 100.5, "D": 90.0}
+    _seed_ranking(repo, today_closes, ["A", "B", "C", "D"])  # A still top-3 -- no swap/rank-exit trigger
+
+    summary = execution.run_daily(FakeBroker(today_closes, holdings=holdings), TODAY)
+
+    syms_after = {p.symbol for p in repo.load_positions("OPEN")}
+    assert syms_after == {"A", "B", "C"}, f"expected top-up to fill both empty slots, got {syms_after}"
+    types = [a["type"] for a in summary["actions"]]
+    assert "TOPUP_FILL_SLOTS" in types
+
+
+def test_topup_skipped_when_kill_switch_tripped(momentum_atr_env):
+    """Same under-target scenario, but kill-switch tripped -- must not
+    deploy fresh capital into new names, only log SKIP_TOPUP."""
+    execution, repo, _sent = momentum_atr_env
+    holdings = _seed_positions(repo, ["A"])
+    repo.update_state(cash=1000.0, peak_equity=1_000_000.0)  # huge drawdown from peak -> trips kill-switch
+
+    today_closes = {"A": 100.5, "B": 100.5, "C": 100.5, "D": 90.0}
+    _seed_ranking(repo, today_closes, ["A", "B", "C", "D"])
+
+    summary = execution.run_daily(FakeBroker(today_closes, holdings=holdings), TODAY)
+
+    assert summary["kill_switch_tripped"] is True
+    syms_after = {p.symbol for p in repo.load_positions("OPEN")}
+    assert syms_after == {"A"}, "must not open new positions while kill-switch is tripped"
+    types = [a["type"] for a in summary["actions"]]
+    assert "SKIP_TOPUP" in types

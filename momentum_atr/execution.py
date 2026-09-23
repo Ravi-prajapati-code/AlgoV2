@@ -477,6 +477,34 @@ def run_daily(broker: BaseBroker, today: _date, dry_run: bool = False) -> dict:
                 else:
                     summary["actions"].append({"type": "SKIP_RANK_EXIT_REALLOC", "reason": "kill_switch"})
 
+        # Fill any slots left empty below PORTFOLIO_SIZE that swap/rank-exit
+        # didn't address this cycle. Every path above only ever acts when a
+        # SWAP or RANK_EXIT trigger fires on an *existing* holding -- with
+        # only 1-2 positions open and no trigger, there was previously no
+        # code path that could ever open a new name to fill the remaining
+        # slot(s), so freed-up cash from a plain exit (e.g. RANK_RULE_EXIT
+        # with no immediate realloc buy, or an external reconciliation
+        # correction) sat idle indefinitely. Confirmed 2026-09-23: WELCORP.NS
+        # left as sole holding since 2026-09-16's ASIANENE.NS RANK_RULE_EXIT
+        # with no replacement, ~88% of equity idle in cash for 7 sessions.
+        current_open = repo.load_positions("OPEN")
+        if 0 < len(current_open) < PORTFOLIO_SIZE:
+            if tripped:
+                summary["actions"].append({"type": "SKIP_TOPUP", "reason": "kill_switch"})
+            else:
+                held = {p.symbol for p in current_open}
+                fill_names = [s for s in ranked if s not in held][:PORTFOLIO_SIZE - len(held)]
+                if fill_names:
+                    invested_now = _atr_invested_value(closes) if not dry_run else 0.0
+                    effective_cash = _get_effective_cash(broker, cash, invested_now) if not dry_run else cash
+                    sizing_prices = _live_prices(broker, fill_names, closes)
+                    budget = min(cash, effective_cash) * (1 - SIZING_SAFETY_MARGIN_PCT - MAX_BUY_CHARGE_RATE)
+                    remaining, bought = _buy_split(fill_names, budget, sizing_prices)
+                    if bought:
+                        spent = _execute_buys(broker, bought, "TOPUP_FILL_SLOTS", sizing_prices, dry_run, plan)
+                        cash = cash - spent if not dry_run else cash
+                        summary["actions"].append({"type": "TOPUP_FILL_SLOTS", "bought": bought})
+
     if dry_run:
         summary["planned_orders"] = plan
         return summary
