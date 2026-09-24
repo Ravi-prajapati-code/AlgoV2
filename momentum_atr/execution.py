@@ -290,6 +290,17 @@ def _execute_buys(broker: BaseBroker, bought: Dict[str, int], reason: str,
         gate_ok, gate_reason = pre_trade_check(sym, "momentum_atr")
         if not gate_ok:
             logger.warning("[Reconciliation] Skip buy %s: %s", sym, gate_reason)
+            if not dry_run:
+                # 2026-09-15 incident: this same block silently ate a SWAP_BUY
+                # (WELCORP.NS) with no alert -- cash sat idle for a week
+                # before anyone noticed. A skipped buy is a same-day event
+                # a human should see, not something to discover later by
+                # noticing unspent cash.
+                send_error_alert(
+                    f"momentum_atr: BUY blocked for {sym} (reason: {reason}, qty {qty}) -- "
+                    f"{gate_reason}. Cash earmarked for this buy will sit idle until the "
+                    "gate clears or someone intervenes."
+                )
             continue
         res = _confirmed_fill(broker, "BUY", sym, qty, dry_run, plan)
         if res is None:
