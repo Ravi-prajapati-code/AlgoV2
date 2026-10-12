@@ -294,6 +294,12 @@ MOMENTUM_ATR_DD_KILL_PCT     = float(os.getenv("MOMENTUM_ATR_DD_KILL_PCT", 0.35)
 # rest for the main strategy. Recomputed fresh each run in execution.py, not
 # a fixed number -- see momentum_atr/execution.py:_get_effective_cash.
 MOMENTUM_ATR_CAPITAL_ALLOCATION_PCT = float(os.getenv("MOMENTUM_ATR_CAPITAL_ALLOCATION_PCT", 0.40))
+# Stock-level long-term trend gate (docs/79): a symbol is eligible only if its
+# latest close > its own 200-session SMA, on top of the existing close > SMA50
+# rule. Backtest (2022-11..2026-05, costed): CAGR 53.1 -> 62.6, MDD -42.6 ->
+# -37.6, passed the full pre-registered gate. Not yet confirmed on live data.
+# Set MOMENTUM_ATR_SMA200_FILTER=false in .env to revert without a code change.
+MOMENTUM_ATR_SMA200_FILTER = os.getenv("MOMENTUM_ATR_SMA200_FILTER", "true").strip().lower() in ("1", "true", "yes", "on")
 
 # momentum_atr is the ONLY strategy authorized to place real broker orders
 # (user rule, 2026-09-07). Main strategy switched to paper-only 2026-09-03;

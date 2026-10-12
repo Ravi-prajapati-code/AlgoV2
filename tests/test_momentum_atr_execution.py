@@ -47,8 +47,14 @@ def test_scoring_matches_backtest_engine_formula(monkeypatch):
     the last score is byte-identical -- catches formula drift silently
     introduced by the port."""
     import engine as backtest_engine
+    import config.settings as settings
     from momentum_atr.scoring import compute_live_scores
 
+    # engine.compute_scores has no SMA200 gate (that lives in the docs/79
+    # research path), and this 80-bar fixture has no SMA200 anyway -- so
+    # compare the bare formula with the gate off. The gate itself is covered
+    # by tests/test_momentum_atr_scoring_sma200.py.
+    monkeypatch.setattr(settings, "MOMENTUM_ATR_SMA200_FILTER", False)
     df = _synthetic_ohlcv(seed=1)
 
     monkeypatch.setattr(backtest_engine.pd, "read_parquet", lambda path: df.copy())
