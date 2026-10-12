@@ -24,7 +24,8 @@ shadow run answers it without risking money.
 - **Paper only.** No broker object, no orders, no writes to the live
   momentum_atr DB. A test asserts that neither file imports broker, db,
   portfolio, notifications, or momentum_atr.execution.
-- Runs after market close (cron 16:45 IST, own lock, 30-minute timeout),
+- Runs after market close (cron 17:15 IST weekdays, own lock, 30-minute timeout,
+  log `logs/momentum_atr_shadow.log`),
   so it can never delay the 08:50 precompute or the 09:17 live run.
 - **Data gaps:** if a held symbol has no bar for a session (Upstox fetch
   stall), that session is deferred and retried next run. It is never

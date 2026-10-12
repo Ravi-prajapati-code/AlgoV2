@@ -10,7 +10,7 @@ last run, and writes:
   data/shadow/momentum_atr/equity.csv          daily equity per book
 
 Cron (after market close, never overlapping the 08:50/09:17 live jobs):
-  45 16 * * 1-5 ... flock -n /tmp/algov2_momentum_atr_shadow.lock -c "timeout 1800 python scripts/run_momentum_atr_shadow.py"
+  15 17 * * 1-5 ... flock -n /tmp/algov2_momentum_atr_shadow.lock -c "timeout 1800 python scripts/run_momentum_atr_shadow.py"
 
 Usage: python scripts/run_momentum_atr_shadow.py [--start YYYY-MM-DD]
 """
