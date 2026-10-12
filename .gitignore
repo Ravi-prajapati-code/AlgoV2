@@ -24,3 +24,6 @@ db/backups/
 .idea/
 
 V2algo.zip
+
+# momentum_atr paper/shadow books (docs/82) -- server-local state
+data/shadow/
