@@ -351,7 +351,26 @@ def _execute_sell(broker: BaseBroker, pos: Position, reason: str, closes: Dict[s
     res = _confirmed_fill(broker, "SELL", pos.symbol, pos.shares, dry_run, plan)
     if res is None:
         return None
-    exit_price = res.avg_price if res.avg_price > 0 else closes.get(pos.symbol, pos.entry_price)
+    # Exit price (docs/83): the broker's confirmed avg fill price. If the
+    # broker confirmed the fill but returned no price, fall back to a live
+    # LTP, recorded and alerted as an ESTIMATE. If even that is unavailable,
+    # the trade is recorded UNRESOLVED (exit_price/P&L NULL, no cash credit)
+    # -- never at the entry price, which used to book a fabricated zero P&L.
+    exit_price, price_tag = res.avg_price, ""
+    if not exit_price or exit_price <= 0:
+        try:
+            ltp = broker.get_ltp(pos.symbol)
+        except Exception:
+            ltp = 0.0
+        if ltp and ltp > 0:
+            exit_price, price_tag = ltp, "|EXIT_PRICE_ESTIMATED_LTP"
+            send_error_alert(
+                f"momentum_atr: SELL {pos.symbol} x{res.filled_qty} confirmed but broker returned no fill "
+                f"price (order_id={res.order_id}). Recorded at live LTP {ltp:.2f} as an ESTIMATE -- verify "
+                "against the contract note."
+            )
+        else:
+            return _record_unresolved_exit(pos, res, reason)
     # net_pnl() reports the full round-trip (buy-leg + sell-leg) cost for
     # the trade record -- correct for P&L reporting. But the buy-leg
     # charge was already deducted from cash at entry time (_execute_buys),
@@ -365,9 +384,56 @@ def _execute_sell(broker: BaseBroker, pos: Position, reason: str, closes: Dict[s
         symbol=pos.symbol, entry_date=pos.entry_date, entry_price=pos.entry_price,
         shares=res.filled_qty, exit_date=_date.today(), exit_price=exit_price,
         gross_pnl=pnl["gross_pnl"], charges=pnl["total_charges"], net_pnl=pnl["net_pnl"],
-        exit_reason=reason, exit_order_id=res.order_id or "",
+        exit_reason=reason + price_tag, exit_order_id=res.order_id or "",
     ))
     return sell_value - sell_leg_charge
+
+
+UNRESOLVED_TAG = "|EXIT_PRICE_UNRESOLVED"
+
+
+def _record_unresolved_exit(pos: Position, res: OrderResult, reason: str) -> float:
+    """The broker confirmed the full SELL but no price is known. Close the
+    position (the shares are gone) and record the trade with exit_price,
+    gross/charges/net P&L all NULL -- the existing schema's way to say
+    "unknown", already rendered as "--" by the dashboard and skipped by its
+    win/loss stats. No cash is credited (0.0 returned), so the ledger
+    under- rather than over-states cash until resolve_unresolved_exit() is
+    run once with the contract-note price."""
+    repo.close_position_and_save_trade(pos.symbol, Trade(
+        symbol=pos.symbol, entry_date=pos.entry_date, entry_price=pos.entry_price,
+        shares=res.filled_qty, exit_date=_date.today(), exit_price=None,
+        gross_pnl=None, charges=None, net_pnl=None,
+        exit_reason=reason + UNRESOLVED_TAG, exit_order_id=res.order_id or "",
+    ))
+    send_error_alert(
+        f"momentum_atr: SELL {pos.symbol} x{res.filled_qty} CONFIRMED (order_id={res.order_id}) but NO "
+        "price is available (no broker avg price, no LTP). Position closed, trade recorded UNRESOLVED "
+        "with no P&L and NO cash credited. Run resolve_unresolved_exit(<trade id>, <contract-note "
+        "price>) once to fix both."
+    )
+    return 0.0
+
+
+def resolve_unresolved_exit(trade_id: int, exit_price: float) -> Optional[float]:
+    """One-shot correction for a trade recorded by _record_unresolved_exit.
+    Fills in the exit price and P&L and credits the sell proceeds to cash,
+    in ONE transaction, only if that trade is still unresolved -- calling it
+    twice (or on any other trade) changes nothing and returns None, so
+    realized P&L / cash can never be counted twice. Returns cash credited."""
+    if exit_price is None or exit_price <= 0:
+        raise ValueError("exit_price must be a positive contract-note price")
+    t = repo.get_trade(trade_id)
+    if t is None or t.net_pnl is not None or not (t.exit_reason or "").endswith(UNRESOLVED_TAG):
+        return None
+    pnl = net_pnl(t.entry_price, exit_price, t.shares)
+    sell_value = exit_price * t.shares
+    credit = sell_value - sell_charges(sell_value).total
+    done = repo.resolve_trade_exit(
+        trade_id, exit_price, pnl["gross_pnl"], pnl["total_charges"], pnl["net_pnl"],
+        new_reason=t.exit_reason[: -len(UNRESOLVED_TAG)] + "|EXIT_PRICE_RESOLVED", cash_credit=credit,
+    )
+    return credit if done else None
 
 
 def run_daily(broker: BaseBroker, today: _date, dry_run: bool = False) -> dict:
@@ -439,13 +505,29 @@ def run_daily(broker: BaseBroker, today: _date, dry_run: bool = False) -> dict:
                 swap_loser, swap_winner = worst_sym, best_sym
 
         rank_exit_sym = None
+        data_missing = []
         for p in positions:
             if p.symbol == swap_loser:
+                continue
+            if p.symbol not in closes:
+                # docs/83: the precompute always scores holdings and keeps
+                # the close of a genuinely ineligible one (volume floor), so
+                # a held symbol absent from `closes` means NO usable data
+                # (fetch failure / stale bar) -- not a low rank. Hold it.
+                data_missing.append(p.symbol)
                 continue
             r = rank_of.get(p.symbol, 10 ** 9)
             if r > PORTFOLIO_SIZE:
                 rank_exit_sym = p.symbol
                 break
+
+        if data_missing:
+            summary["actions"].append({"type": "HOLD_DATA_MISSING", "symbols": data_missing})
+            if not dry_run:
+                send_error_alert(
+                    f"momentum_atr: held {data_missing} have no ranking data today -- HELD, not "
+                    "rank-exited (a data gap is not a rank signal). Check the precompute log."
+                )
 
         if swap_loser:
             loser_pos = next(p for p in positions if p.symbol == swap_loser)

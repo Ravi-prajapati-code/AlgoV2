@@ -58,6 +58,29 @@ def _alert_abort(today: date, reason: str) -> None:
         logger.warning("[momentum_atr] Failed to send precompute abort alert: %s", e)
 
 
+def _report_holdings(today: date, report: dict) -> None:
+    """Log every held symbol that needed special handling (docs/83), and
+    alert only on DATA_MISSING -- the one case a human may need to act on."""
+    if report["held_outside_universe"]:
+        logger.info("[momentum_atr] held but outside today's universe (scored anyway, rank rule decides): %s",
+                    report["held_outside_universe"])
+    if report["held_volume_floor"]:
+        logger.info("[momentum_atr] held but below the 20d volume floor (genuine ineligibility, rank-exits as before): %s",
+                    report["held_volume_floor"])
+    if report["held_data_missing"]:
+        logger.warning("[momentum_atr] held with NO usable data -- will be HELD, not exited, at 09:17: %s",
+                       report["held_data_missing"])
+        try:
+            from notifications.telegram import send_error_alert
+            send_error_alert(
+                f"momentum_atr {today}: no usable price data for held symbol(s) "
+                f"{report['held_data_missing']} (reference bar {report['reference_bar_date']}). "
+                "They will be HELD at 09:17 (not treated as rank-exits). Check the data feed."
+            )
+        except Exception as e:
+            logger.warning("[momentum_atr] failed to send held-data-missing alert: %s", e)
+
+
 def main() -> int:
     today = date.today()
 
@@ -76,12 +99,14 @@ def main() -> int:
 
     try:
         from data.universe import get_all_symbols
-        from momentum_atr.scoring import compute_live_scores, rank_symbols
+        from momentum_atr.scoring import build_ranking_inputs
 
         symbols = get_all_symbols()
-        logger.info("[momentum_atr] scoring %d universe symbols...", len(symbols))
-        scores, closes = compute_live_scores(symbols)
+        held = [p.symbol for p in repo.load_positions("OPEN")]
+        logger.info("[momentum_atr] scoring %d universe symbols + %d holdings...", len(symbols), len(held))
+        ranked, closes, held_report = build_ranking_inputs(symbols, held)
         stalls = get_and_reset_stall_count()
+        _report_holdings(today, held_report)
         if stalls:
             logger.warning("[momentum_atr] %d symbol(s) hit the 45s fetch stall this run", stalls)
         if len(closes) < 20:
@@ -91,7 +116,6 @@ def main() -> int:
             logger.error("[momentum_atr] only %d symbols scored -- aborting", len(closes))
             return 1
 
-        ranked = rank_symbols(scores)
         repo.save_daily_ranking(today, ranked, closes)
         logger.info(
             "[momentum_atr] precompute complete: %d scored, top-5 ranked: %s",

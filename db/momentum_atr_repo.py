@@ -145,6 +145,42 @@ def close_position_and_save_trade(symbol: str, t: Trade):
         conn.close()
 
 
+def get_trade(trade_id: int) -> Optional[Trade]:
+    conn = get_connection()
+    r = conn.execute("SELECT * FROM trades WHERE id = ?", (trade_id,)).fetchone()
+    conn.close()
+    if not r:
+        return None
+    return Trade(
+        symbol=r["symbol"], entry_date=pd.to_datetime(r["entry_date"]).date(), entry_price=r["entry_price"],
+        shares=r["shares"], exit_date=pd.to_datetime(r["exit_date"]).date() if r["exit_date"] else None,
+        exit_price=r["exit_price"], gross_pnl=r["gross_pnl"], charges=r["charges"], net_pnl=r["net_pnl"],
+        exit_reason=r["exit_reason"], exit_order_id=r["exit_order_id"] or "", id=r["id"],
+    )
+
+
+def resolve_trade_exit(trade_id: int, exit_price: float, gross_pnl: float, charges: float,
+                       net_pnl: float, new_reason: str, cash_credit: float) -> bool:
+    """Atomically fill in an UNRESOLVED trade's price/P&L and credit cash
+    (docs/83). The WHERE clause only matches a still-unresolved row, so a
+    second call updates nothing and credits nothing -- returns False."""
+    conn = get_connection()
+    try:
+        with conn:
+            cur = conn.execute(
+                """UPDATE trades SET exit_price = ?, gross_pnl = ?, charges = ?, net_pnl = ?,
+                          exit_reason = ?
+                   WHERE id = ? AND net_pnl IS NULL AND exit_reason LIKE '%|EXIT_PRICE_UNRESOLVED'""",
+                (exit_price, gross_pnl, charges, net_pnl, new_reason, trade_id),
+            )
+            if cur.rowcount != 1:
+                return False
+            conn.execute("UPDATE state SET cash = cash + ? WHERE id = 1", (cash_credit,))
+            return True
+    finally:
+        conn.close()
+
+
 def reduce_position_and_save_trade(symbol: str, remaining_shares: int, t: Trade):
     """Atomically reduce an OPEN position's share count and record the
     removed portion as its own trade -- mirrors db/repository.py's

@@ -54,9 +54,11 @@ def _get_dynamic_symbols() -> List[str]:
 
 def get_all_symbols() -> List[str]:
     """
-    Return static watchlist (119 stocks) PLUS any dynamic universe symbols
-    not already in the static list. Static list is always the floor —
-    dynamic universe adds new stocks discovered by the scanner.
+    Return the static watchlist (config/watchlist_nse.py ALL_SYMBOLS --
+    504 symbols as of 2026-10-12; the count changes whenever that file is
+    edited) PLUS any CORE symbols from the dynamic universe table
+    (universe_active) not already in the static list. Static list is always
+    the floor -- the dynamic universe adds stocks discovered by the scanner.
 
     UNIVERSE_OVERRIDE_FILE env var (unset by default) replaces the static
     list wholesale with a newline-delimited symbol file — used for the
