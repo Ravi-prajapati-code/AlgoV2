@@ -266,6 +266,13 @@ def momentum_atr_env(tmp_path, monkeypatch):
     monkeypatch.setattr(execution, "send_error_alert", lambda msg: sent.append(("error", msg)))
     monkeypatch.setattr(execution, "send_message", lambda msg: sent.append(("msg", msg)))
     monkeypatch.setattr(risk, "send_message", lambda msg: sent.append(("msg", msg)))
+    # Existing tests exercise the v1 rules (3 names, exit at rank > 3, swap
+    # on, realloc across the whole top 3); v2 defaults have their own tests.
+    monkeypatch.setattr(execution, "PORTFOLIO_SIZE", 3)
+    monkeypatch.setattr(execution, "KEEP_RANK", 3)
+    monkeypatch.setattr(execution, "MOMENTUM_ATR_USE_SWAP_RULE", True)
+    monkeypatch.setattr(execution, "MOMENTUM_ATR_REALLOC_NEW_SLOTS_ONLY", False)
+    monkeypatch.setattr(risk, "MOMENTUM_ATR_DD_SCALE_ENABLED", False)
 
     repo.init_db()
     return execution, repo, sent
@@ -342,8 +349,9 @@ def test_rank_exit_sells_first_out_of_rank_and_reallocs(momentum_atr_env):
     assert "RANK_EXIT_SELL" in types and "RANK_EXIT_REALLOC" in types
 
 
-def test_kill_switch_blocks_buys_but_not_sells(momentum_atr_env):
+def test_kill_switch_blocks_buys_but_not_sells(momentum_atr_env, monkeypatch):
     execution, repo, sent = momentum_atr_env
+    monkeypatch.setattr("momentum_atr.risk.MOMENTUM_ATR_DD_KILL_PCT", 0.35)  # off by default
     holdings = _seed_positions(repo, ["A", "B", "C"])
     # peak_equity far above today's equity -> forces a >=25% drawdown trip
     repo.update_state(cash=0.0, peak_equity=10_000.0)
@@ -626,10 +634,11 @@ def test_topup_fills_empty_slots_when_under_target(momentum_atr_env):
     assert "TOPUP_FILL_SLOTS" in types
 
 
-def test_topup_skipped_when_kill_switch_tripped(momentum_atr_env):
+def test_topup_skipped_when_kill_switch_tripped(momentum_atr_env, monkeypatch):
     """Same under-target scenario, but kill-switch tripped -- must not
     deploy fresh capital into new names, only log SKIP_TOPUP."""
     execution, repo, _sent = momentum_atr_env
+    monkeypatch.setattr("momentum_atr.risk.MOMENTUM_ATR_DD_KILL_PCT", 0.35)  # off by default
     holdings = _seed_positions(repo, ["A"])
     repo.update_state(cash=1000.0, peak_equity=1_000_000.0)  # huge drawdown from peak -> trips kill-switch
 

@@ -172,6 +172,14 @@ class BaseBroker(ABC):
             return holdings_fn()
         return self.get_positions()
 
+    def get_net_holdings_or_none(self) -> Optional[List[LivePosition]]:
+        """Delivery shares actually owned right now, including TODAY's buys
+        and sells (None = API failure). Default: get_holdings_or_none(),
+        correct for brokers/test doubles whose holdings update immediately.
+        UpstoxBroker overrides it: its long-term holdings only change at
+        settlement, so same-day trades must be netted in from positions."""
+        return self.get_holdings_or_none()
+
     def get_ltp(self, symbol: str) -> float:
         """Real-time last-traded-price for one symbol, used to size an
         order against the current price instead of a stale prior-close.

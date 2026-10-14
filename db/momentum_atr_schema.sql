@@ -14,7 +14,8 @@ CREATE TABLE IF NOT EXISTS positions (
     entry_price     REAL    NOT NULL,
     shares          INTEGER NOT NULL,
     status          TEXT    NOT NULL DEFAULT 'OPEN',
-    entry_order_id  TEXT
+    entry_order_id  TEXT,
+    buy_charges_paid REAL   NOT NULL DEFAULT 0.0  -- actual buy-leg charges, all adds
 );
 
 CREATE TABLE IF NOT EXISTS trades (

@@ -1,8 +1,12 @@
 """
 Daily decision + order-placement logic for the momentum x ATR live
-strategy. Baseline config only (portfolio_size=3, exit_mode=immediate,
-enable_swap=True, enable_cascade=True) -- the docs/58 gate-preferred
-config, not TOP1/TOP2.
+strategy. Portfolio construction v2 (2026-10-14, config/settings.py):
+hold up to MOMENTUM_ATR_PORTFOLIO_SIZE names (5); a holding is kept while
+its rank <= MOMENTUM_ATR_KEEP_RANK (10), at most one rank exit per day,
+and the freed cash only buys new names into empty slots; the -3%/+3% swap
+rule is off unless MOMENTUM_ATR_USE_SWAP_RULE; buys are sized down in
+drawdown (risk.compute_drawdown_scale). v1 was 3 names / exit at rank > 3
+/ swap on / realloc across the whole top 3.
 
 Timing note (why one cron run needs no cross-run "pending action" state):
 scripts/momentum_atr_experiment/engine.py:run_sim() decides an action from
@@ -29,15 +33,19 @@ from typing import Dict, List, Optional, Tuple
 
 from broker.base import BaseBroker, OrderResult, OrderStatus
 from charges.calculator import buy_charges, sell_charges, net_pnl
-from config.settings import MOMENTUM_ATR_DD_KILL_PCT, MOMENTUM_ATR_CAPITAL_ALLOCATION_PCT
+from config.settings import (
+    MOMENTUM_ATR_CAPITAL_ALLOCATION_PCT, MOMENTUM_ATR_PORTFOLIO_SIZE, MOMENTUM_ATR_KEEP_RANK,
+    MOMENTUM_ATR_USE_SWAP_RULE, MOMENTUM_ATR_REALLOC_NEW_SLOTS_ONLY,
+)
 from db import momentum_atr_repo as repo
 from momentum_atr.models import Position, Trade
-from momentum_atr.risk import check_kill_switch
+from momentum_atr.risk import check_kill_switch, compute_drawdown_scale
 from notifications.telegram import send_error_alert, send_message
 
 logger = logging.getLogger(__name__)
 
-PORTFOLIO_SIZE = 3
+PORTFOLIO_SIZE = MOMENTUM_ATR_PORTFOLIO_SIZE
+KEEP_RANK = max(MOMENTUM_ATR_PORTFOLIO_SIZE, MOMENTUM_ATR_KEEP_RANK)
 SWAP_LOSS_PCT = -3.0
 SWAP_GAIN_PCT = 3.0
 AWAIT_TIMEOUT_SEC = 30
@@ -87,7 +95,8 @@ def _confirmed_fill(broker: BaseBroker, side: str, symbol: str, qty: int,
     # below. Best-effort -- if this call fails, pre_qty stays None and
     # self-heal is simply skipped (no worse than before this fix existed).
     try:
-        pre_qty = {h.symbol: h.quantity for h in broker.get_holdings()}.get(symbol, 0)
+        holdings = broker.get_net_holdings_or_none()
+        pre_qty = {h.symbol: h.quantity for h in holdings}.get(symbol, 0) if holdings is not None else None
     except Exception:
         pre_qty = None
     res = broker.buy(symbol, qty) if side == "BUY" else broker.sell(symbol, qty)
@@ -124,7 +133,13 @@ def _self_heal_via_holdings(broker: BaseBroker, side: str, symbol: str, qty: int
     if pre_qty is None:
         return None
     try:
-        post_qty = {h.symbol: h.quantity for h in broker.get_holdings()}.get(symbol, 0)
+        # Netted holdings: Upstox long-term holdings alone never show today's
+        # buy or sell, so a failed/absent read must not look like "0 held"
+        # (that would self-heal a SELL that never happened).
+        holdings = broker.get_net_holdings_or_none()
+        if holdings is None:
+            return None
+        post_qty = {h.symbol: h.quantity for h in holdings}.get(symbol, 0)
     except Exception:
         return None
     expected = pre_qty + qty if side == "BUY" else pre_qty - qty
@@ -218,7 +233,7 @@ def _real_total_account_equity(broker: BaseBroker) -> Optional[float]:
     the broker has no concept of per-strategy attribution. None means the
     broker read failed -- callers must fail closed, never treat this as 0."""
     cash = broker.get_available_cash_or_none()
-    holdings = broker.get_holdings_or_none()
+    holdings = broker.get_net_holdings_or_none()
     if cash is None or holdings is None:
         return None
     invested = sum(h.quantity * h.ltp for h in holdings if h.quantity > 0)
@@ -232,7 +247,8 @@ def _atr_invested_value(closes: Dict[str, float]) -> float:
                for p in repo.load_positions("OPEN"))
 
 
-def _get_effective_cash(broker: BaseBroker, internal_cash: float, atr_invested_value: float) -> float:
+def _get_effective_cash(broker: BaseBroker, internal_cash: float, atr_invested_value: float,
+                        dd_scale: float = 1.0) -> float:
     """Returns the real BUY budget for this cycle. 0.0 always means "do not
     buy" -- callers cannot distinguish that from genuine zero cash here, but
     every 0.0-forcing branch below fires its own distinctly-worded alert, so
@@ -268,7 +284,7 @@ def _get_effective_cash(broker: BaseBroker, internal_cash: float, atr_invested_v
         )
         return 0.0
 
-    allocation_cap = total_equity * MOMENTUM_ATR_CAPITAL_ALLOCATION_PCT
+    allocation_cap = total_equity * MOMENTUM_ATR_CAPITAL_ALLOCATION_PCT * dd_scale
     headroom = max(0.0, allocation_cap - atr_invested_value)
     return min(internal_cash, real_cash, headroom)
 
@@ -307,7 +323,8 @@ def _execute_buys(broker: BaseBroker, bought: Dict[str, int], reason: str,
             continue
         fill_price = res.avg_price if res.avg_price > 0 else closes.get(sym, 0.0)
         value = fill_price * res.filled_qty
-        spent += value + buy_charges(value).total
+        leg_charge = buy_charges(value).total
+        spent += value + leg_charge
 
         existing = repo.get_position(sym)
         if existing:
@@ -316,12 +333,13 @@ def _execute_buys(broker: BaseBroker, bought: Dict[str, int], reason: str,
             repo.save_position(Position(
                 symbol=sym, entry_date=existing.entry_date, entry_price=new_entry,
                 shares=total_shares, status="OPEN", entry_order_id=existing.entry_order_id,
-                id=existing.id,
+                buy_charges_paid=existing.buy_charges_paid + leg_charge, id=existing.id,
             ))
         else:
             repo.save_position(Position(
                 symbol=sym, entry_date=_date.today(), entry_price=fill_price,
                 shares=res.filled_qty, status="OPEN", entry_order_id=res.order_id or "",
+                buy_charges_paid=leg_charge,
             ))
     return spent
 
@@ -333,7 +351,10 @@ def _broker_holds_at_least(broker: BaseBroker, symbol: str, qty: int) -> bool:
     then times out or 404s trying to confirm an order the broker never
     really backed. Cheaper and clearer to catch the mismatch up front and
     skip, than to place-then-discover."""
-    held = {h.symbol: h.quantity for h in broker.get_holdings()}
+    holdings = broker.get_net_holdings_or_none()
+    if holdings is None:
+        return False
+    held = {h.symbol: h.quantity for h in holdings}
     return held.get(symbol, 0) >= qty
 
 
@@ -376,9 +397,16 @@ def _execute_sell(broker: BaseBroker, pos: Position, reason: str, closes: Dict[s
     # charge was already deducted from cash at entry time (_execute_buys),
     # so the cash credited back here must use the sell-leg charge only, or
     # the buy-leg charge would be subtracted twice.
-    pnl = net_pnl(pos.entry_price, exit_price, res.filled_qty)
     sell_value = exit_price * res.filled_qty
     sell_leg_charge = sell_charges(sell_value).total
+    if pos.buy_charges_paid > 0:
+        # Actual buy legs (each add paid its own brokerage minimum) rather
+        # than one notional buy at the averaged entry price.
+        gross = round((exit_price - pos.entry_price) * res.filled_qty, 2)
+        charges = round(pos.buy_charges_paid + sell_leg_charge, 2)
+        pnl = {"gross_pnl": gross, "total_charges": charges, "net_pnl": round(gross - charges, 2)}
+    else:  # positions opened before buy_charges_paid was recorded
+        pnl = net_pnl(pos.entry_price, exit_price, res.filled_qty)
 
     repo.close_position_and_save_trade(pos.symbol, Trade(
         symbol=pos.symbol, entry_date=pos.entry_date, entry_price=pos.entry_price,
@@ -436,6 +464,25 @@ def resolve_unresolved_exit(trade_id: int, exit_price: float) -> Optional[float]
     return credit if done else None
 
 
+def _select_realloc_targets(ranked: List[str], held_now: set, portfolio_size: int,
+                            new_slots_only: bool) -> List[str]:
+    """Buy targets after a rank exit, never exceeding `portfolio_size` open
+    names. new_slots_only: only new names into the empty slots; otherwise the
+    current top `portfolio_size` (held names topped up, new names up to the
+    free slots)."""
+    free_slots = max(0, portfolio_size - len(held_now))
+    if new_slots_only:
+        return [s for s in ranked if s not in held_now][:free_slots]
+    names, added = [], 0
+    for s in ranked[:portfolio_size]:
+        if s in held_now:
+            names.append(s)
+        elif added < free_slots:
+            names.append(s)
+            added += 1
+    return names
+
+
 def run_daily(broker: BaseBroker, today: _date, dry_run: bool = False) -> dict:
     """One cron invocation. Returns a summary dict for logging/Telegram."""
     plan: list = []
@@ -476,7 +523,8 @@ def run_daily(broker: BaseBroker, today: _date, dry_run: bool = False) -> dict:
 
     rank_of = {sym: i + 1 for i, sym in enumerate(ranked)}
 
-    tripped = check_kill_switch(today, state.cash, positions, closes)
+    tripped = check_kill_switch(today, state.cash, positions, closes, persist=not dry_run)
+    dd_scale = compute_drawdown_scale(state.cash, positions, closes)
     cash = state.cash
     summary = {"date": str(today), "dry_run": dry_run, "kill_switch_tripped": tripped, "actions": []}
 
@@ -486,7 +534,7 @@ def run_daily(broker: BaseBroker, today: _date, dry_run: bool = False) -> dict:
         if len(names) < PORTFOLIO_SIZE or tripped:
             summary["actions"].append({"type": "SKIP_INITIAL", "reason": "kill_switch" if tripped else "insufficient_ranked_symbols"})
         else:
-            effective_cash = _get_effective_cash(broker, cash, 0.0) if not dry_run else cash
+            effective_cash = _get_effective_cash(broker, cash, 0.0, dd_scale) if not dry_run else cash * dd_scale
             sizing_prices = _live_prices(broker, names, closes)
             budget = effective_cash * (1 - SIZING_SAFETY_MARGIN_PCT - MAX_BUY_CHARGE_RATE)
             remaining, bought = _buy_split(names, budget, sizing_prices)
@@ -498,10 +546,13 @@ def run_daily(broker: BaseBroker, today: _date, dry_run: bool = False) -> dict:
                    for p in positions if p.symbol in closes}
 
         swap_loser = swap_winner = None
-        if returns:
+        if MOMENTUM_ATR_USE_SWAP_RULE and returns:
             worst_sym = min(returns, key=returns.get)
             best_sym = max(returns, key=returns.get)
-            if worst_sym != best_sym and returns[worst_sym] <= SWAP_LOSS_PCT and returns[best_sym] >= SWAP_GAIN_PCT:
+            # Never add to a winner that the rank rule is about to sell.
+            if (worst_sym != best_sym and returns[worst_sym] <= SWAP_LOSS_PCT
+                    and returns[best_sym] >= SWAP_GAIN_PCT
+                    and rank_of.get(best_sym, 10 ** 9) <= KEEP_RANK):
                 swap_loser, swap_winner = worst_sym, best_sym
 
         rank_exit_sym = None
@@ -517,7 +568,7 @@ def run_daily(broker: BaseBroker, today: _date, dry_run: bool = False) -> dict:
                 data_missing.append(p.symbol)
                 continue
             r = rank_of.get(p.symbol, 10 ** 9)
-            if r > PORTFOLIO_SIZE:
+            if r > KEEP_RANK:
                 rank_exit_sym = p.symbol
                 break
 
@@ -537,7 +588,7 @@ def run_daily(broker: BaseBroker, today: _date, dry_run: bool = False) -> dict:
                 summary["actions"].append({"type": "SWAP_SELL", "symbol": swap_loser})
                 if not tripped:
                     invested_now = _atr_invested_value(closes) if not dry_run else 0.0
-                    effective_cash = _get_effective_cash(broker, cash, invested_now) if not dry_run else cash
+                    effective_cash = _get_effective_cash(broker, cash, invested_now, dd_scale) if not dry_run else cash * dd_scale
                     sizing_prices = _live_prices(broker, [swap_winner], closes)
                     price = sizing_prices.get(swap_winner)
                     if price and price > 0:
@@ -551,22 +602,30 @@ def run_daily(broker: BaseBroker, today: _date, dry_run: bool = False) -> dict:
                     summary["actions"].append({"type": "SKIP_SWAP_BUY", "reason": "kill_switch"})
 
         if rank_exit_sym:
-            exit_pos = next(p for p in positions if p.symbol == rank_exit_sym)
+            # Re-read from the DB: if this name was also today's swap winner,
+            # the swap buy just added shares and the loaded quantity is stale
+            # (selling it would leave the added shares untracked).
+            exit_pos = (repo.get_position(rank_exit_sym) if not dry_run else None) or \
+                next(p for p in positions if p.symbol == rank_exit_sym)
             proceeds = _execute_sell(broker, exit_pos, "RANK_RULE_EXIT", closes, dry_run, plan)
             if proceeds is not None:
                 cash += proceeds
                 summary["actions"].append({"type": "RANK_EXIT_SELL", "symbol": rank_exit_sym})
                 if not tripped:
-                    names = ranked[:PORTFOLIO_SIZE]
-                    invested_now = _atr_invested_value(closes) if not dry_run else 0.0
-                    effective_cash = _get_effective_cash(broker, cash, invested_now) if not dry_run else cash
-                    sizing_prices = _live_prices(broker, names, closes)
-                    budget = min(cash, effective_cash) * (1 - SIZING_SAFETY_MARGIN_PCT - MAX_BUY_CHARGE_RATE)
-                    remaining, bought = _buy_split(names, budget, sizing_prices)
-                    if bought:
-                        spent = _execute_buys(broker, bought, "RANK_EXIT_REALLOC_TOPN", sizing_prices, dry_run, plan)
-                        cash = cash - spent if not dry_run else cash
-                        summary["actions"].append({"type": "RANK_EXIT_REALLOC", "bought": bought})
+                    held_now = ({p.symbol for p in repo.load_positions("OPEN")} if not dry_run else
+                                {p.symbol for p in positions if p.symbol not in (swap_loser, rank_exit_sym)})
+                    names = _select_realloc_targets(ranked, held_now, PORTFOLIO_SIZE,
+                                                    MOMENTUM_ATR_REALLOC_NEW_SLOTS_ONLY)
+                    if names:
+                        invested_now = _atr_invested_value(closes) if not dry_run else 0.0
+                        effective_cash = _get_effective_cash(broker, cash, invested_now, dd_scale) if not dry_run else cash * dd_scale
+                        sizing_prices = _live_prices(broker, names, closes)
+                        budget = min(cash, effective_cash) * (1 - SIZING_SAFETY_MARGIN_PCT - MAX_BUY_CHARGE_RATE)
+                        remaining, bought = _buy_split(names, budget, sizing_prices)
+                        if bought:
+                            spent = _execute_buys(broker, bought, "RANK_EXIT_REALLOC_TOPN", sizing_prices, dry_run, plan)
+                            cash = cash - spent if not dry_run else cash
+                            summary["actions"].append({"type": "RANK_EXIT_REALLOC", "bought": bought})
                 else:
                     summary["actions"].append({"type": "SKIP_RANK_EXIT_REALLOC", "reason": "kill_switch"})
 
@@ -589,7 +648,7 @@ def run_daily(broker: BaseBroker, today: _date, dry_run: bool = False) -> dict:
                 fill_names = [s for s in ranked if s not in held][:PORTFOLIO_SIZE - len(held)]
                 if fill_names:
                     invested_now = _atr_invested_value(closes) if not dry_run else 0.0
-                    effective_cash = _get_effective_cash(broker, cash, invested_now) if not dry_run else cash
+                    effective_cash = _get_effective_cash(broker, cash, invested_now, dd_scale) if not dry_run else cash * dd_scale
                     sizing_prices = _live_prices(broker, fill_names, closes)
                     budget = min(cash, effective_cash) * (1 - SIZING_SAFETY_MARGIN_PCT - MAX_BUY_CHARGE_RATE)
                     remaining, bought = _buy_split(fill_names, budget, sizing_prices)
@@ -602,18 +661,18 @@ def run_daily(broker: BaseBroker, today: _date, dry_run: bool = False) -> dict:
         summary["planned_orders"] = plan
         return summary
 
-    repo.update_state(cash=cash)
     final_positions = repo.load_positions("OPEN")
     mark_prices = _live_prices(broker, [p.symbol for p in final_positions], closes)
     invested = sum(p.shares * mark_prices.get(p.symbol, p.entry_price) for p in final_positions)
     total_equity = cash + invested
-    new_state = repo.get_state()
-    drawdown = (new_state.peak_equity - total_equity) / new_state.peak_equity if new_state.peak_equity > 0 else 0.0
+    peak_equity = max(repo.get_state().peak_equity, total_equity)
+    repo.update_state(cash=cash, peak_equity=peak_equity)
+    drawdown = (peak_equity - total_equity) / peak_equity if peak_equity > 0 else 0.0
 
     from momentum_atr.models import EquitySnapshot
     repo.save_equity_snapshot(EquitySnapshot(
         date=today, cash=cash, invested_value=invested, total_equity=total_equity,
-        peak_equity=new_state.peak_equity, drawdown_pct=drawdown, kill_switch_tripped=tripped,
+        peak_equity=peak_equity, drawdown_pct=drawdown, kill_switch_tripped=tripped,
     ))
     summary["cash"] = cash
     summary["invested_value"] = invested

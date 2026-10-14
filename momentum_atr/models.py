@@ -19,6 +19,7 @@ class Position:
     shares: int
     status: str = "OPEN"
     entry_order_id: str = ""
+    buy_charges_paid: float = 0.0  # actual buy-leg charges, summed over every add
     id: Optional[int] = None
 
     @property

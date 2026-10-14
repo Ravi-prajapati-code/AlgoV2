@@ -285,7 +285,12 @@ RESEARCH_DB_PATH        = os.getenv("RESEARCH_DB_PATH_OVERRIDE", "db/research.db
 # env/yaml values for.
 MOMENTUM_ATR_DB_PATH         = os.getenv("MOMENTUM_ATR_DB_PATH_OVERRIDE", "db/momentum_atr.db")
 MOMENTUM_ATR_INITIAL_CAPITAL = float(os.getenv("MOMENTUM_ATR_INITIAL_CAPITAL", 100000))
-MOMENTUM_ATR_DD_KILL_PCT     = float(os.getenv("MOMENTUM_ATR_DD_KILL_PCT", 0.35))
+# Kill switch OFF by default (0). A 35% switch tripped in the 2024 fall and
+# never cleared in the 2022-2026 replay -- buys blocked, account drifts to
+# cash, equity can't recover -- so 2025-2026 earned 0%. If set > 0 it now
+# also self-resets after MOMENTUM_ATR_KILL_COOLDOWN_DAYS fully in cash.
+MOMENTUM_ATR_DD_KILL_PCT     = float(os.getenv("MOMENTUM_ATR_DD_KILL_PCT", 0.0))
+MOMENTUM_ATR_KILL_COOLDOWN_DAYS = int(os.getenv("MOMENTUM_ATR_KILL_COOLDOWN_DAYS", 20))
 # Real broker cash is one shared pool with the main strategy above (same
 # Upstox account) -- there is no segregated 1L sitting anywhere. This caps
 # what momentum_atr may ever deploy to MOMENTUM_ATR_CAPITAL_ALLOCATION_PCT
@@ -300,6 +305,20 @@ MOMENTUM_ATR_CAPITAL_ALLOCATION_PCT = float(os.getenv("MOMENTUM_ATR_CAPITAL_ALLO
 # -37.6, passed the full pre-registered gate. Not yet confirmed on live data.
 # Set MOMENTUM_ATR_SMA200_FILTER=false in .env to revert without a code change.
 MOMENTUM_ATR_SMA200_FILTER = os.getenv("MOMENTUM_ATR_SMA200_FILTER", "true").strip().lower() in ("1", "true", "yes", "on")
+# Portfolio construction v2 (2026-10-14). Replay 2022-11..2026-10 on the 153
+# research list: 3 names/rank-3 exit/swap on = 78.0% CAGR, -39.2% MDD;
+# 5 names/keep-rank 10/swap off/DD scaling = 88.5%, -27.2%. The 88.5% is a
+# parameter spike (neighbours N4/N6/K8/K12 = 44-59%) -- expect ~45-60%; the
+# shallower drawdown (-28..-31% across all neighbours) is the robust part.
+MOMENTUM_ATR_PORTFOLIO_SIZE = int(os.getenv("MOMENTUM_ATR_PORTFOLIO_SIZE", 5))
+MOMENTUM_ATR_KEEP_RANK = int(os.getenv("MOMENTUM_ATR_KEEP_RANK", 10))
+MOMENTUM_ATR_USE_SWAP_RULE = os.getenv("MOMENTUM_ATR_USE_SWAP_RULE", "false").strip().lower() in ("1", "true", "yes", "on")
+MOMENTUM_ATR_REALLOC_NEW_SLOTS_ONLY = os.getenv("MOMENTUM_ATR_REALLOC_NEW_SLOTS_ONLY", "true").strip().lower() in ("1", "true", "yes", "on")
+# Exposure scaling: allocation cap shrinks linearly once strategy drawdown
+# passes START (15%), at 3x the excess, floored at MIN_FACTOR (25%).
+MOMENTUM_ATR_DD_SCALE_ENABLED = os.getenv("MOMENTUM_ATR_DD_SCALE_ENABLED", "true").strip().lower() in ("1", "true", "yes", "on")
+MOMENTUM_ATR_DD_SCALE_START_PCT = float(os.getenv("MOMENTUM_ATR_DD_SCALE_START_PCT", 0.15))
+MOMENTUM_ATR_DD_SCALE_MIN_FACTOR = float(os.getenv("MOMENTUM_ATR_DD_SCALE_MIN_FACTOR", 0.25))
 
 # momentum_atr is the ONLY strategy authorized to place real broker orders
 # (user rule, 2026-09-07). Main strategy switched to paper-only 2026-09-03;

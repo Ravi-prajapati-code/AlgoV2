@@ -28,7 +28,7 @@ import logging
 import os
 import time
 from datetime import datetime, date
-from typing import List, Optional
+from typing import Dict, List, Optional
 
 import socket
 import requests
@@ -475,6 +475,53 @@ class UpstoxBroker(BaseBroker):
             return float(equity.get("available_margin", 0))
         except Exception as e:
             logger.error("[Upstox] get_available_cash_or_none() failed: %s", e)
+            return None
+
+    def get_net_holdings_or_none(self) -> Optional[List[LivePosition]]:
+        """Long-term holdings + today's delivery (product D/CNC) trades from
+        short-term-positions, netted per symbol, both signs. Upstox moves
+        same-day trades into long-term-holdings only at settlement -- seen
+        live 2026-10-14: after selling 7 MOREPENLAB and buying 2 SHANTIGOLD
+        at 09:17, holdings still read MOREPENLAB 7 / SHANTIGOLD 166 while
+        short-term-positions read -7 / +2. Without netting, a same-day buy is
+        invisible (sell of it skipped, fill self-heal can't confirm it) and a
+        same-day sell still looks held. None on any API failure."""
+        try:
+            resp_lt = self._session.get(f"{self._base_url}/portfolio/long-term-holdings",
+                                        headers=self._headers, timeout=10)
+            resp_lt.raise_for_status()
+            resp_st = self._session.get(f"{self._base_url}/portfolio/short-term-positions",
+                                        headers=self._headers, timeout=10)
+            resp_st.raise_for_status()
+            net: Dict[str, LivePosition] = {}
+            for pos in resp_lt.json().get("data", []) or []:
+                qty = int(pos.get("quantity", 0))
+                if qty:
+                    sym = pos["tradingsymbol"] + ".NS"
+                    net[sym] = LivePosition(symbol=sym, quantity=qty,
+                                            avg_price=float(pos.get("average_price", 0)),
+                                            ltp=float(pos.get("last_price", 0)),
+                                            pnl=float(pos.get("pnl", 0)), product="CNC")
+            for pos in resp_st.json().get("data", []) or []:
+                if pos.get("product") not in ("D", "CNC"):
+                    continue
+                qty = int(pos.get("quantity", 0))
+                if not qty:
+                    continue
+                sym = pos["tradingsymbol"] + ".NS"
+                prev = net.get(sym)
+                ltp = float(pos.get("last_price", 0))
+                if prev is None:
+                    net[sym] = LivePosition(symbol=sym, quantity=qty,
+                                            avg_price=float(pos.get("average_price", 0)),
+                                            ltp=ltp, pnl=0.0, product="CNC")
+                else:
+                    net[sym] = LivePosition(symbol=sym, quantity=prev.quantity + qty,
+                                            avg_price=prev.avg_price, ltp=ltp or prev.ltp,
+                                            pnl=prev.pnl, product="CNC")
+            return [p for p in net.values() if p.quantity > 0]
+        except Exception as e:
+            logger.error("[Upstox] get_net_holdings_or_none() failed: %s", e)
             return None
 
     def get_holdings_or_none(self) -> Optional[List[LivePosition]]:

@@ -32,6 +32,10 @@ def init_db():
     schema_path = os.path.join(os.path.dirname(__file__), "momentum_atr_schema.sql")
     with open(schema_path, "r") as f:
         conn.executescript(f.read())
+    # Migrate DBs created before buy_charges_paid existed.
+    cols = {r[1] for r in conn.execute("PRAGMA table_info(positions)").fetchall()}
+    if "buy_charges_paid" not in cols:
+        conn.execute("ALTER TABLE positions ADD COLUMN buy_charges_paid REAL NOT NULL DEFAULT 0.0")
     conn.execute(
         """INSERT OR IGNORE INTO state (id, cash, peak_equity, kill_switch_tripped)
            VALUES (1, ?, ?, 0)""",
@@ -62,13 +66,17 @@ def get_state() -> StrategyState:
 
 def update_state(cash: Optional[float] = None, peak_equity: Optional[float] = None,
                   kill_switch_tripped: Optional[bool] = None,
-                  kill_switch_tripped_date: Optional[date] = None):
-    """Partial update -- only columns explicitly passed (not None) change."""
+                  kill_switch_tripped_date: Optional[date] = None,
+                  clear_tripped_date: bool = False):
+    """Partial update -- only columns explicitly passed (not None) change.
+    clear_tripped_date=True sets kill_switch_tripped_date back to NULL."""
     current = get_state()
     new_cash = current.cash if cash is None else cash
     new_peak = current.peak_equity if peak_equity is None else peak_equity
     new_tripped = current.kill_switch_tripped if kill_switch_tripped is None else kill_switch_tripped
     new_tripped_date = current.kill_switch_tripped_date if kill_switch_tripped_date is None else kill_switch_tripped_date
+    if clear_tripped_date:
+        new_tripped_date = None
     conn = get_connection()
     conn.execute(
         """UPDATE state SET cash = ?, peak_equity = ?, kill_switch_tripped = ?,
@@ -86,20 +94,36 @@ def _row_to_position(r) -> Position:
     return Position(
         symbol=r["symbol"], entry_date=pd.to_datetime(r["entry_date"]).date(),
         entry_price=r["entry_price"], shares=r["shares"], status=r["status"],
-        entry_order_id=r["entry_order_id"] or "", id=r["id"]
+        entry_order_id=r["entry_order_id"] or "",
+        buy_charges_paid=float(r["buy_charges_paid"] or 0.0) if "buy_charges_paid" in r.keys() else 0.0,
+        id=r["id"]
     )
 
 
 def save_position(pos: Position):
+    """Update an existing row in place (pos.id set) or open a new one.
+    In-place matters: run_daily sells rank exits in id order, and the old
+    INSERT OR REPLACE gave a topped-up position a new, highest id. A new
+    position replaces any CLOSED row for the same symbol (symbol is UNIQUE),
+    so a re-bought name gets a fresh id, same as before."""
     conn = get_connection()
-    conn.execute(
-        """INSERT OR REPLACE INTO positions
-           (symbol, entry_date, entry_price, shares, status, entry_order_id)
-           VALUES (?, ?, ?, ?, ?, ?)""",
-        (pos.symbol, pos.entry_date.strftime("%Y-%m-%d"), pos.entry_price,
-         pos.shares, pos.status, pos.entry_order_id)
-    )
-    conn.commit()
+    values = (pos.symbol, pos.entry_date.strftime("%Y-%m-%d"), pos.entry_price,
+              pos.shares, pos.status, pos.entry_order_id, pos.buy_charges_paid)
+    with conn:
+        if pos.id is not None:
+            conn.execute(
+                """UPDATE positions SET symbol = ?, entry_date = ?, entry_price = ?, shares = ?,
+                   status = ?, entry_order_id = ?, buy_charges_paid = ? WHERE id = ?""",
+                values + (pos.id,)
+            )
+        else:
+            conn.execute("DELETE FROM positions WHERE symbol = ? AND status = 'CLOSED'", (pos.symbol,))
+            conn.execute(
+                """INSERT INTO positions
+                   (symbol, entry_date, entry_price, shares, status, entry_order_id, buy_charges_paid)
+                   VALUES (?, ?, ?, ?, ?, ?, ?)""",
+                values
+            )
     conn.close()
 
 
