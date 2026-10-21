@@ -72,3 +72,10 @@ def test_broken_download_keeps_existing_cache(cache):
     m = mod.InstrumentMapper()
     assert m.get_key("OLD") == "NSE_EQ|OLD"
     assert json.loads(cache.path.read_text()) == {"OLD": "NSE_EQ|OLD"}
+
+
+def test_renamed_symbol_resolves_to_new_ticker(cache):
+    cache.path.write_text(json.dumps({"HEGAM": "NSE_EQ|INE545A01024"}))
+    m = mod.InstrumentMapper()
+    assert m.get_key("HEG.NS") == "NSE_EQ|INE545A01024"
+    assert m.get_key("GUJGASLTD.NS") is None  # alias target absent -> no key

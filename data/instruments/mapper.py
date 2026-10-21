@@ -24,6 +24,13 @@ class InstrumentMapper:
     # A download yielding fewer keys than this is treated as broken and never
     # replaces a working cache (normal is ~2,900 EQ+BE).
     MIN_SANE_KEYS = 1500
+    # NSE renames that keep the ISIN: Upstox lists only the new ticker, so the
+    # old one resolves to nothing and its bars freeze. Map old -> new so the
+    # universe/backtest keep their ticker while live data follows the ISIN.
+    RENAMED_SYMBOLS = {
+        "GUJGASLTD": "GUJENERGY",  # INE844O01030
+        "HEG":       "HEGAM",      # INE545A01024
+    }
 
     def __init__(self):
         self.mapping: Dict[str, str] = {}
@@ -115,7 +122,7 @@ class InstrumentMapper:
     def get_key(self, symbol: str) -> Optional[str]:
         """Get Upstox instrument key. Accepts 'RELIANCE' or 'RELIANCE.NS'."""
         clean = symbol.replace(".NS", "").replace(".BO", "").upper()
-        return self.mapping.get(clean)
+        return self.mapping.get(clean) or self.mapping.get(self.RENAMED_SYMBOLS.get(clean, ""))
 
     def get_all_instruments(self) -> List[Dict]:
         """Return full instrument list (for universe scanning)."""
