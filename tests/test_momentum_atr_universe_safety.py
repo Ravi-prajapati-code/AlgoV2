@@ -84,6 +84,19 @@ def test_3_held_symbol_with_missing_or_stale_data_is_flagged_not_ranked(fetch):
         assert s not in closes and s not in ranked
 
 
+def test_3b_unheld_symbol_with_stale_bar_is_not_ranked_and_reported(fetch):
+    """2026-10-21: HFCL lost its Upstox key and was ranked on a frozen
+    2026-09-25 close for 4 weeks. A stale unheld symbol must drop out."""
+    from momentum_atr.scoring import build_ranking_inputs
+    fetch.update({"U1": _bars(_trend(100, 150)), "U2": _bars(_trend(100, 140)),
+                  "FROZEN": _bars(_trend(100, 200), end="2026-07-30")})
+    ranked, closes, rep = build_ranking_inputs(["U1", "U2", "FROZEN", "NOKEY"], held=[])
+    assert "FROZEN" not in ranked and "FROZEN" not in closes
+    assert rep["stale_unheld"] == {"FROZEN": "2026-07-30"}
+    assert rep["no_data_unheld"] == ["NOKEY"]
+    assert set(ranked) == {"U1", "U2"}
+
+
 def test_5_held_symbol_below_volume_floor_stays_a_genuine_exit(fetch):
     from momentum_atr.scoring import build_ranking_inputs
     fetch.update({"U1": _bars(_trend(100, 150)), "THIN": _bars(_trend(100, 200), volume=50_000)})

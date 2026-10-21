@@ -153,6 +153,24 @@ def build_ranking_inputs(universe: List[str], held: List[str]
             scores.pop(h, None)
             closes.pop(h, None)
             missing[h] = f"stale_last_bar_{d['last_date']}_vs_{ref_date}"
+
+    # Non-held symbols: a stale last bar must never be ranked -- its frozen
+    # close would compete against fresh ones (2026-10-21: HFCL scored on a
+    # 09-25 close for 4 weeks). no_data symbols are already unranked; both
+    # are reported so a broken feed is visible instead of silent.
+    held_set = set(held)
+    stale_unheld: Dict[str, str] = {}
+    no_data_unheld: List[str] = []
+    for s, d in diag.items():
+        if s in held_set:
+            continue
+        if d.get("status") == "no_data":
+            no_data_unheld.append(s)
+        elif d.get("status") == "scored" and ref_date and d.get("last_date") and d["last_date"] < ref_date:
+            scores.pop(s, None)
+            closes.pop(s, None)
+            stale_unheld[s] = str(d["last_date"])
     report = {"held_outside_universe": outside, "held_data_missing": missing,
-              "held_volume_floor": volume_floor, "reference_bar_date": ref_date}
+              "held_volume_floor": volume_floor, "reference_bar_date": ref_date,
+              "stale_unheld": stale_unheld, "no_data_unheld": sorted(no_data_unheld)}
     return rank_symbols(scores), closes, report

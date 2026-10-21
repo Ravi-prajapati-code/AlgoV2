@@ -2,6 +2,7 @@ import requests
 import gzip
 import json
 import os
+import time
 import logging
 from typing import Optional, Dict, List
 
@@ -16,6 +17,13 @@ class InstrumentMapper:
     INSTRUMENTS_URL = "https://assets.upstox.com/market-quote/instruments/exchange/NSE.json.gz"
     CACHE_FILE = "data/instruments/nse_instruments.json"
     FULL_CACHE_FILE = "data/instruments/nse_instruments_full.json"
+    # Upstox re-lists symbols when NSE moves them between series (EQ <-> BE)
+    # or renames them; a stale cache then silently returns no key and the
+    # fetcher serves frozen bars (2026-10-21: HFCL/HEG frozen since 09-25).
+    MAX_CACHE_AGE_SEC = 20 * 3600
+    # A download yielding fewer keys than this is treated as broken and never
+    # replaces a working cache (normal is ~2,900 EQ+BE).
+    MIN_SANE_KEYS = 1500
 
     def __init__(self):
         self.mapping: Dict[str, str] = {}
@@ -24,7 +32,8 @@ class InstrumentMapper:
 
     def _load_mapping(self):
         """Load mapping from local cache or download if missing."""
-        if not os.path.exists(self.CACHE_FILE):
+        if (not os.path.exists(self.CACHE_FILE)
+                or time.time() - os.path.getmtime(self.CACHE_FILE) > self.MAX_CACHE_AGE_SEC):
             self._download_and_cache()
 
         try:
@@ -76,14 +85,21 @@ class InstrumentMapper:
                             "listing_date":   item.get("listing_date"),
                         })
 
-            if not new_mapping:
-                logger.warning("[Instruments] No EQ instruments found, trying fallback.")
-                for item in data:
-                    if item.get("segment") == "NSE_EQ":
-                        symbol = item.get("trading_symbol")
-                        key = item.get("instrument_key")
-                        if symbol and key:
-                            new_mapping[symbol] = key
+            # BE (trade-for-trade, delivery only -- e.g. HFCL, MOREPENLAB) is
+            # still tradable for this delivery-only system: map it for price
+            # lookups, but keep it out of full_list so universe discovery is
+            # unchanged. EQ wins if a symbol is in both.
+            for item in data:
+                if item.get("segment") == "NSE_EQ" and item.get("instrument_type") == "BE":
+                    symbol = item.get("trading_symbol")
+                    key = item.get("instrument_key")
+                    if symbol and key:
+                        new_mapping.setdefault(symbol, key)
+
+            if len(new_mapping) < self.MIN_SANE_KEYS:
+                logger.error("[Instruments] Download returned only %d keys -- keeping existing cache.",
+                             len(new_mapping))
+                return
 
             with open(self.CACHE_FILE, "w") as f:
                 json.dump(new_mapping, f)

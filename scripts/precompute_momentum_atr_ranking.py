@@ -81,6 +81,28 @@ def _report_holdings(today: date, report: dict) -> None:
             logger.warning("[momentum_atr] failed to send held-data-missing alert: %s", e)
 
 
+def _report_data_gaps(today: date, report: dict) -> None:
+    """Universe symbols that could not be ranked on fresh data: no bars at all
+    (usually no Upstox instrument key -- renamed, delisted, series change) or
+    a stale last bar. They are excluded from the ranking; alert so the feed
+    or the universe gets fixed instead of the gap staying silent."""
+    stale, no_data = report.get("stale_unheld", {}), report.get("no_data_unheld", [])
+    if not stale and not no_data:
+        return
+    logger.warning("[momentum_atr] excluded from ranking -- stale last bar (vs %s): %s; no data: %s",
+                   report["reference_bar_date"], stale, no_data)
+    try:
+        from notifications.telegram import send_error_alert
+        send_error_alert(
+            f"momentum_atr {today}: {len(stale) + len(no_data)} universe symbol(s) excluded from "
+            f"ranking for missing fresh data (reference bar {report['reference_bar_date']}). "
+            f"Stale: {stale}. No data: {no_data}. "
+            "Run scripts/audit_symbol_data_freshness.py to see which have no Upstox key."
+        )
+    except Exception as e:
+        logger.warning("[momentum_atr] failed to send data-gap alert: %s", e)
+
+
 def main() -> int:
     today = date.today()
 
@@ -107,6 +129,7 @@ def main() -> int:
         ranked, closes, held_report = build_ranking_inputs(symbols, held)
         stalls = get_and_reset_stall_count()
         _report_holdings(today, held_report)
+        _report_data_gaps(today, held_report)
         if stalls:
             logger.warning("[momentum_atr] %d symbol(s) hit the 45s fetch stall this run", stalls)
         if len(closes) < 20:
