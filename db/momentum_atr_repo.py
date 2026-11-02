@@ -374,3 +374,36 @@ def load_sla_checkpoints(d: date) -> Dict[str, dict]:
     ).fetchall()
     conn.close()
     return {r["step"]: {"status": r["status"], "detail": r["detail"], "ts": r["ts"]} for r in rows}
+
+
+# ── PENDING ORDERS (late-fill tracking) ──────────────────────────────────
+
+def save_pending_order(order_id: str, d: date, side: str, symbol: str, qty: int, reason: str) -> None:
+    """Record an order the run could not confirm. Idempotent on order_id."""
+    conn = get_connection()
+    conn.execute(
+        """INSERT OR IGNORE INTO pending_orders (order_id, date, side, symbol, qty, reason, status, ts)
+           VALUES (?, ?, ?, ?, ?, ?, 'PENDING', ?)""",
+        (order_id, d.strftime("%Y-%m-%d"), side, symbol, qty, reason, datetime.utcnow().isoformat())
+    )
+    conn.commit()
+    conn.close()
+
+
+def load_pending_orders() -> List[dict]:
+    conn = get_connection()
+    rows = conn.execute(
+        "SELECT * FROM pending_orders WHERE status = 'PENDING' ORDER BY id"
+    ).fetchall()
+    conn.close()
+    return [{**dict(r), "date": datetime.strptime(r["date"], "%Y-%m-%d").date()} for r in rows]
+
+
+def mark_pending_order(order_id: str, status: str, detail: str = "") -> None:
+    conn = get_connection()
+    conn.execute(
+        "UPDATE pending_orders SET status = ?, detail = ?, ts = ? WHERE order_id = ?",
+        (status, detail, datetime.utcnow().isoformat(), order_id)
+    )
+    conn.commit()
+    conn.close()

@@ -73,21 +73,37 @@ def _await_order_completion(broker: BaseBroker, order_id: str) -> Optional[Order
     elapsed = 0
     res = None
     while elapsed < AWAIT_TIMEOUT_SEC:
-        res = broker.get_order_status(order_id)
-        if res.status in (OrderStatus.COMPLETE, OrderStatus.REJECTED,
-                          OrderStatus.CANCELLED):
+        res = _order_status_with_book_fallback(broker, order_id)
+        if res.status in TERMINAL_STATUSES:
             return res
         time.sleep(AWAIT_POLL_SEC)
         elapsed += AWAIT_POLL_SEC
     return res
 
 
+TERMINAL_STATUSES = (OrderStatus.COMPLETE, OrderStatus.REJECTED, OrderStatus.CANCELLED)
+
+
+def _order_status_with_book_fallback(broker: BaseBroker, order_id: str) -> OrderResult:
+    """order/details first; if that lookup fails (UNKNOWN), the day order
+    book. SHANTIGOLD.NS 2026-11-02: order/details 404'd throughout while
+    order/retrieve-all showed the fill as complete."""
+    res = broker.get_order_status(order_id)
+    if res.status == OrderStatus.UNKNOWN:
+        booked = broker.find_order_in_book(order_id)
+        if booked is not None:
+            return booked
+    return res
+
+
 def _confirmed_fill(broker: BaseBroker, side: str, symbol: str, qty: int,
-                     dry_run: bool, plan: list) -> Optional[OrderResult]:
+                     dry_run: bool, plan: list, reason: str = "") -> Optional[OrderResult]:
     """Place a MARKET order, wait for terminal status. Returns the
     OrderResult only when status==COMPLETE and filled_qty==qty; None
-    otherwise (caller must not touch the ledger). dry_run logs intent and
-    returns None without calling the broker."""
+    otherwise (caller must not touch the ledger). An order the broker has
+    not finally rejected/cancelled is saved to pending_orders so a later
+    resolve_pending_orders() applies it if it fills. dry_run logs intent
+    and returns None without calling the broker."""
     if dry_run:
         plan.append({"side": side, "symbol": symbol, "qty": qty})
         return None
@@ -108,12 +124,20 @@ def _confirmed_fill(broker: BaseBroker, side: str, symbol: str, qty: int,
         healed = _self_heal_via_holdings(broker, side, symbol, qty, pre_qty, res)
         if healed is not None:
             return healed
-        send_error_alert(f"momentum_atr: {side} {symbol} x{qty} did not complete "
-                          f"(status={final.status if final else 'unknown'}) -- ledger left unchanged")
+        status = final.status if final else OrderStatus.UNKNOWN
+        if status in (OrderStatus.REJECTED, OrderStatus.CANCELLED):
+            send_error_alert(f"momentum_atr: {side} {symbol} x{qty} {status.value} by broker "
+                              f"(order_id={res.order_id}) -- ledger left unchanged")
+            return None
+        repo.save_pending_order(res.order_id, _date.today(), side, symbol, qty, reason)
+        send_error_alert(f"momentum_atr: {side} {symbol} x{qty} not confirmed yet (status={status.value}, "
+                          f"order_id={res.order_id}) -- saved as PENDING; the late-fill check will "
+                          "update the ledger if it fills")
         return None
     if final.filled_qty != qty:
+        repo.save_pending_order(res.order_id, _date.today(), side, symbol, qty, reason)
         send_error_alert(f"momentum_atr: {side} {symbol} partial fill {final.filled_qty}/{qty} "
-                          "-- treated as unresolved, ledger left unchanged")
+                          f"(order_id={res.order_id}) -- saved as PENDING, ledger left unchanged")
         return None
     return final
 
@@ -296,6 +320,13 @@ def _execute_buys(broker: BaseBroker, bought: Dict[str, int], reason: str,
     from reconciliation.gate import pre_trade_check
 
     spent = 0.0
+    if not dry_run and any(p["side"] == "BUY" for p in repo.load_pending_orders()):
+        # A BUY still working means ledger cash is not yet debited for it --
+        # buying more now could double-spend. The late-fill check re-runs
+        # the day once it resolves.
+        send_error_alert(f"momentum_atr: BUYs ({reason}) held back -- an earlier BUY is still "
+                          "PENDING; the late-fill check retries once it resolves")
+        return 0.0
     for sym, qty in bought.items():
         if qty <= 0:
             continue
@@ -318,30 +349,36 @@ def _execute_buys(broker: BaseBroker, bought: Dict[str, int], reason: str,
                     "gate clears or someone intervenes."
                 )
             continue
-        res = _confirmed_fill(broker, "BUY", sym, qty, dry_run, plan)
+        res = _confirmed_fill(broker, "BUY", sym, qty, dry_run, plan, reason=reason)
         if res is None:
             continue
-        fill_price = res.avg_price if res.avg_price > 0 else closes.get(sym, 0.0)
-        value = fill_price * res.filled_qty
-        leg_charge = buy_charges(value).total
-        spent += value + leg_charge
-
-        existing = repo.get_position(sym)
-        if existing:
-            total_shares = existing.shares + res.filled_qty
-            new_entry = (existing.shares * existing.entry_price + res.filled_qty * fill_price) / total_shares
-            repo.save_position(Position(
-                symbol=sym, entry_date=existing.entry_date, entry_price=new_entry,
-                shares=total_shares, status="OPEN", entry_order_id=existing.entry_order_id,
-                buy_charges_paid=existing.buy_charges_paid + leg_charge, id=existing.id,
-            ))
-        else:
-            repo.save_position(Position(
-                symbol=sym, entry_date=_date.today(), entry_price=fill_price,
-                shares=res.filled_qty, status="OPEN", entry_order_id=res.order_id or "",
-                buy_charges_paid=leg_charge,
-            ))
+        spent += _record_buy_fill(sym, res, closes.get(sym, 0.0))
     return spent
+
+
+def _record_buy_fill(sym: str, res: OrderResult, fallback_price: float) -> float:
+    """Ledger side of a confirmed BUY: open or average into the position.
+    Returns cash spent (fill value + buy-leg charges)."""
+    fill_price = res.avg_price if res.avg_price > 0 else fallback_price
+    value = fill_price * res.filled_qty
+    leg_charge = buy_charges(value).total
+
+    existing = repo.get_position(sym)
+    if existing:
+        total_shares = existing.shares + res.filled_qty
+        new_entry = (existing.shares * existing.entry_price + res.filled_qty * fill_price) / total_shares
+        repo.save_position(Position(
+            symbol=sym, entry_date=existing.entry_date, entry_price=new_entry,
+            shares=total_shares, status="OPEN", entry_order_id=existing.entry_order_id,
+            buy_charges_paid=existing.buy_charges_paid + leg_charge, id=existing.id,
+        ))
+    else:
+        repo.save_position(Position(
+            symbol=sym, entry_date=_date.today(), entry_price=fill_price,
+            shares=res.filled_qty, status="OPEN", entry_order_id=res.order_id or "",
+            buy_charges_paid=leg_charge,
+        ))
+    return value + leg_charge
 
 
 def _broker_holds_at_least(broker: BaseBroker, symbol: str, qty: int) -> bool:
@@ -369,9 +406,15 @@ def _execute_sell(broker: BaseBroker, pos: Position, reason: str, closes: Dict[s
             f"left OPEN in DB, not touched."
         )
         return None
-    res = _confirmed_fill(broker, "SELL", pos.symbol, pos.shares, dry_run, plan)
+    res = _confirmed_fill(broker, "SELL", pos.symbol, pos.shares, dry_run, plan, reason=reason)
     if res is None:
         return None
+    return _record_sell_fill(broker, pos, res, reason)
+
+
+def _record_sell_fill(broker: BaseBroker, pos: Position, res: OrderResult, reason: str) -> float:
+    """Ledger side of a confirmed full SELL: close the position, record the
+    trade. Returns cash to credit."""
     # Exit price (docs/83): the broker's confirmed avg fill price. If the
     # broker confirmed the fill but returned no price, fall back to a live
     # LTP, recorded and alerted as an ESTIMATE. If even that is unavailable,
@@ -483,9 +526,65 @@ def _select_realloc_targets(ranked: List[str], held_now: set, portfolio_size: in
     return names
 
 
-def run_daily(broker: BaseBroker, today: _date, dry_run: bool = False) -> dict:
+def resolve_pending_orders(broker: BaseBroker) -> dict:
+    """Apply orders the broker filled after their run stopped waiting
+    (pending_orders). Each is checked via order/details then the day order
+    book; only a full COMPLETE fill touches the ledger, through the same
+    _record_buy_fill/_record_sell_fill path a normal fill uses, and the
+    cash delta is applied to state here. REJECTED/CANCELLED -> NOFILL.
+    Still open past its own day, partial, or ledger mismatch -> MANUAL +
+    alert (never guessed). Returns {"sells": [...], "buys": [...], "cash_delta": x}."""
+    out = {"sells": [], "buys": [], "nofill": [], "cash_delta": 0.0}
+    for p in repo.load_pending_orders():
+        oid, sym, qty, side = p["order_id"], p["symbol"], p["qty"], p["side"]
+        res = _order_status_with_book_fallback(broker, oid)
+        if res.status in (OrderStatus.REJECTED, OrderStatus.CANCELLED):
+            repo.mark_pending_order(oid, "NOFILL", res.status.value)
+            out["nofill"].append(sym)
+            send_error_alert(f"momentum_atr: pending {side} {sym} x{qty} (order_id={oid}) ended "
+                              f"{res.status.value} -- no ledger change")
+            continue
+        if res.status != OrderStatus.COMPLETE:
+            if p["date"] < _date.today():
+                repo.mark_pending_order(oid, "MANUAL", f"unresolved after its day: {res.status.value}")
+                send_error_alert(f"momentum_atr: pending {side} {sym} x{qty} (order_id={oid}) still "
+                                  f"{res.status.value} after its trading day -- needs manual reconcile")
+            continue
+        if res.filled_qty != qty:
+            repo.mark_pending_order(oid, "MANUAL", f"filled {res.filled_qty}/{qty}")
+            send_error_alert(f"momentum_atr: pending {side} {sym} (order_id={oid}) filled "
+                              f"{res.filled_qty}/{qty} -- needs manual reconcile")
+            continue
+        if side == "SELL":
+            pos = repo.get_position(sym)
+            if pos is None or pos.shares != qty:
+                repo.mark_pending_order(oid, "MANUAL", f"ledger shares {pos.shares if pos else 0} != {qty}")
+                send_error_alert(f"momentum_atr: late SELL {sym} x{qty} filled (order_id={oid}) but the "
+                                  "ledger position no longer matches -- needs manual reconcile")
+                continue
+            delta = _record_sell_fill(broker, pos, res, p["reason"])
+            out["sells"].append(sym)
+        else:
+            delta = -_record_buy_fill(sym, res, res.avg_price)
+            out["buys"].append(sym)
+        state = repo.get_state()
+        repo.update_state(cash=state.cash + delta)
+        out["cash_delta"] += delta
+        repo.mark_pending_order(oid, "FILLED", f"avg {res.avg_price:.2f}")
+        send_message(f"momentum_atr: late fill applied -- {side} {sym} x{qty} @ {res.avg_price:.2f} "
+                     f"(order_id={oid}), ledger cash {delta:+,.2f}")
+    return out
+
+
+def run_daily(broker: BaseBroker, today: _date, dry_run: bool = False, buys_only: bool = False) -> dict:
     """One cron invocation. Returns a summary dict for logging/Telegram."""
     plan: list = []
+    if not dry_run:
+        resolve_pending_orders(broker)
+    # Symbols with an order still working at the broker: never place a
+    # second order for them (a same-day re-run would otherwise re-sell a
+    # position whose first SELL is still open).
+    pending_syms = {p["symbol"] for p in repo.load_pending_orders()}
     state = repo.get_state()
     positions = sorted(repo.load_positions("OPEN"), key=lambda p: p.id or 0)
 
@@ -543,7 +642,7 @@ def run_daily(broker: BaseBroker, today: _date, dry_run: bool = False) -> dict:
             summary["actions"].append({"type": "INITIAL_TOPN_SPLIT", "bought": bought})
     else:
         returns = {p.symbol: (closes[p.symbol] - p.entry_price) / p.entry_price * 100
-                   for p in positions if p.symbol in closes}
+                   for p in positions if p.symbol in closes and p.symbol not in pending_syms}
 
         swap_loser = swap_winner = None
         if MOMENTUM_ATR_USE_SWAP_RULE and returns:
@@ -558,7 +657,7 @@ def run_daily(broker: BaseBroker, today: _date, dry_run: bool = False) -> dict:
         rank_exit_sym = None
         data_missing = []
         for p in positions:
-            if p.symbol == swap_loser:
+            if p.symbol == swap_loser or p.symbol in pending_syms:
                 continue
             if p.symbol not in closes:
                 # docs/83: the precompute always scores holdings and keeps
@@ -571,6 +670,11 @@ def run_daily(broker: BaseBroker, today: _date, dry_run: bool = False) -> dict:
             if r > KEEP_RANK:
                 rank_exit_sym = p.symbol
                 break
+
+        if buys_only:
+            # Same-day late-fill re-run: the day's one exit decision was
+            # already made at 09:17 -- only fill empty slots now.
+            swap_loser = swap_winner = rank_exit_sym = None
 
         if data_missing:
             summary["actions"].append({"type": "HOLD_DATA_MISSING", "symbols": data_missing})

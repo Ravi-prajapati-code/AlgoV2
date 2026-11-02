@@ -232,6 +232,9 @@ def run_reconcile():
     # corrupting it, not just false-alerting (shared-broker fungibility,
     # see CYIENT incident 2026-09).
     unknown = broker_syms - db_syms - momentum_atr_syms       # Broker holds, neither ledger knows — auto-fixed below
+    # Idle-cash reserve (liquid ETF) is owned by no strategy by design.
+    from config.settings import RESERVE_SYMBOLS
+    unknown -= set(RESERVE_SYMBOLS)
 
     logger.info("DB open: %s", db_syms)
     logger.info("momentum_atr open: %s", momentum_atr_syms)

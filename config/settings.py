@@ -299,6 +299,11 @@ MOMENTUM_ATR_KILL_COOLDOWN_DAYS = int(os.getenv("MOMENTUM_ATR_KILL_COOLDOWN_DAYS
 # rest for the main strategy. Recomputed fresh each run in execution.py, not
 # a fixed number -- see momentum_atr/execution.py:_get_effective_cash.
 MOMENTUM_ATR_CAPITAL_ALLOCATION_PCT = float(os.getenv("MOMENTUM_ATR_CAPITAL_ALLOCATION_PCT", 0.40))
+# Idle-reserve holdings (docs/100 addendum: allocation 0.55 + the rest in a
+# liquid ETF). Held on the same Upstox account so _real_total_account_equity
+# counts them toward the allocation base; no strategy trades them, and the
+# reconciler must not report them as unknown broker-only positions.
+RESERVE_SYMBOLS = [s.strip() for s in os.getenv("RESERVE_SYMBOLS", "LIQUIDBEES.NS").split(",") if s.strip()]
 # Stock-level long-term trend gate (docs/79): a symbol is eligible only if its
 # latest close > its own 200-session SMA, on top of the existing close > SMA50
 # rule. Backtest (2022-11..2026-05, costed): CAGR 53.1 -> 62.6, MDD -42.6 ->

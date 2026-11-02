@@ -652,3 +652,118 @@ def test_topup_skipped_when_kill_switch_tripped(momentum_atr_env, monkeypatch):
     assert syms_after == {"A"}, "must not open new positions while kill-switch is tripped"
     types = [a["type"] for a in summary["actions"]]
     assert "SKIP_TOPUP" in types
+
+
+class BookOnlyBroker(FakeBroker):
+    """order/details always fails (UNKNOWN) and broker holdings never move,
+    so self-heal cannot confirm -- only the day order book can. Models the
+    SHANTIGOLD.NS incident (2026-11-02): order/details 404'd throughout,
+    order/retrieve-all showed the SELL complete (13 min after placement)."""
+
+    def __init__(self, prices, holdings=None, book_visible=True):
+        super().__init__(prices, holdings=holdings)
+        self.book_visible = book_visible
+
+    def get_order_status(self, order_id):
+        real = self._orders[order_id]
+        return OrderResult(order_id=order_id, status=OrderStatus.UNKNOWN, symbol=real.symbol,
+                           side=real.side, requested_qty=real.requested_qty,
+                           rejection_reason="test-forced-unknown")
+
+    def find_order_in_book(self, order_id):
+        return self._orders.get(order_id) if self.book_visible else None
+
+
+def test_order_book_fallback_confirms_fill_when_status_lookup_fails(momentum_atr_env, monkeypatch):
+    execution, repo, _sent = momentum_atr_env
+    monkeypatch.setattr(execution.time, "sleep", lambda s: None)
+    holdings = _seed_positions(repo, ["A"])
+    broker = BookOnlyBroker({"A": 110.0}, holdings=holdings)
+
+    proceeds = execution._execute_sell(broker, repo.get_position("A"), "TEST_EXIT", {"A": 110.0}, False, [])
+
+    assert proceeds is not None
+    assert repo.get_position("A") is None
+    assert repo.load_pending_orders() == []
+
+
+def test_unconfirmed_sell_saved_pending_then_applied_by_late_fill_check(momentum_atr_env, monkeypatch):
+    """The SELL fills only after the run stopped waiting: ledger must stay
+    untouched at first, then resolve_pending_orders() closes the position
+    and credits the proceeds exactly once."""
+    execution, repo, sent = momentum_atr_env
+    monkeypatch.setattr(execution.time, "sleep", lambda s: None)
+    holdings = _seed_positions(repo, ["A"])
+    repo.update_state(cash=0.0, peak_equity=1000.0)
+    broker = BookOnlyBroker({"A": 110.0}, holdings=holdings, book_visible=False)
+
+    assert execution._execute_sell(broker, repo.get_position("A"), "RANK_RULE_EXIT", {"A": 110.0}, False, []) is None
+    assert repo.get_position("A") is not None
+    assert [p["symbol"] for p in repo.load_pending_orders()] == ["A"]
+    assert any("PENDING" in msg for _kind, msg in sent)
+
+    assert execution.resolve_pending_orders(broker)["sells"] == []  # still not visible: no change
+    assert repo.get_position("A") is not None
+
+    broker.book_visible = True
+    out = execution.resolve_pending_orders(broker)
+    assert out["sells"] == ["A"]
+    assert repo.get_position("A") is None
+    assert 1000.0 < repo.get_state().cash < 1100.0  # 10 x 110 less sell charges
+    assert repo.load_pending_orders() == []
+    assert execution.resolve_pending_orders(broker)["sells"] == []  # idempotent
+
+
+def test_rejected_pending_order_marked_nofill_without_ledger_change(momentum_atr_env):
+    execution, repo, _sent = momentum_atr_env
+    _seed_positions(repo, ["A"])
+    broker = FakeBroker({"A": 110.0})
+    repo.save_pending_order("X1", date.today(), "SELL", "A", 10, "RANK_RULE_EXIT")
+    broker._orders["X1"] = OrderResult(order_id="X1", status=OrderStatus.REJECTED, symbol="A",
+                                       side=OrderSide.SELL, requested_qty=10)
+    cash_before = repo.get_state().cash
+
+    out = execution.resolve_pending_orders(broker)
+
+    assert out["nofill"] == ["A"]
+    assert repo.get_position("A") is not None
+    assert repo.get_state().cash == cash_before
+
+
+def test_run_never_resells_symbol_with_pending_order(momentum_atr_env):
+    execution, repo, _sent = momentum_atr_env
+    holdings = _seed_positions(repo, ["A"])
+    repo.save_pending_order("X2", date.today(), "SELL", "A", 10, "RANK_RULE_EXIT")
+    closes = {"A": 100.0, "B": 100.0, "C": 100.0, "D": 100.0}
+    _seed_ranking(repo, closes, ["B", "C", "D"])  # A unranked -> would rank-exit
+    broker = FakeBroker(closes, holdings=holdings)
+    broker._orders["X2"] = OrderResult(order_id="X2", status=OrderStatus.OPEN, symbol="A",
+                                       side=OrderSide.SELL, requested_qty=10)
+
+    execution.run_daily(broker, TODAY)
+
+    assert repo.get_position("A") is not None
+    assert not any(o.side == OrderSide.SELL for o in broker._orders.values() if o.order_id != "X2")
+
+
+def test_buys_only_rerun_skips_exits(momentum_atr_env):
+    execution, repo, _sent = momentum_atr_env
+    holdings = _seed_positions(repo, ["A"])
+    repo.update_state(cash=1000.0, peak_equity=2000.0)
+    closes = {"A": 100.0, "B": 100.0, "C": 100.0, "D": 100.0}
+    _seed_ranking(repo, closes, ["B", "C", "D"])
+
+    execution.run_daily(FakeBroker(closes, holdings=holdings), TODAY, buys_only=True)
+
+    assert repo.get_position("A") is not None
+
+
+def test_pending_buy_blocks_further_buys(momentum_atr_env):
+    execution, repo, sent = momentum_atr_env
+    repo.save_pending_order("X3", date.today(), "BUY", "A", 5, "TOPUP_FILL_SLOTS")
+
+    spent = execution._execute_buys(FakeBroker({"B": 100.0}), {"B": 3}, "TOPUP_FILL_SLOTS", {"B": 100.0}, False, [])
+
+    assert spent == 0.0
+    assert repo.get_position("B") is None
+    assert any("held back" in msg for _kind, msg in sent)

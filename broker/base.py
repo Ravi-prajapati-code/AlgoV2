@@ -199,6 +199,15 @@ class BaseBroker(ABC):
         fills like PaperBroker never hit the timeout-retry path)."""
         return None
 
+    def find_order_in_book(self, order_id: str) -> Optional[OrderResult]:
+        """Return today's order `order_id` from the broker's day order book, else None.
+
+        Fallback for when get_order_status() itself fails: Upstox's
+        order/details 404'd for a real filled order twice (ASIANENE.NS
+        2026-09-16, SHANTIGOLD.NS 2026-11-02) while order/retrieve-all
+        returned it as complete. Default returns None."""
+        return None
+
     def place_order_with_retry(self, request: OrderRequest) -> OrderResult:
         """
         Place an order with automatic retry on transient failures.

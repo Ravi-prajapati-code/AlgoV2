@@ -89,3 +89,24 @@ CREATE TABLE IF NOT EXISTS sla_checkpoints (
     ts              TEXT    NOT NULL,
     UNIQUE(date, step)
 );
+
+-- Orders placed but not confirmed filled before the run gave up (status
+-- lookup 404/timeout, still OPEN at the broker). The ledger is NOT changed
+-- for these at placement time; momentum_atr.execution.resolve_pending_orders()
+-- re-checks each (order/details, then the day order book) at the start of
+-- every run and from the late-fill cron, and applies the ledger update only
+-- once the broker reports a full fill. 2026-11-02 SHANTIGOLD.NS incident: a
+-- SELL filled 13 min after the run stopped polling, ledger kept the
+-- position and the day's buys never happened.
+CREATE TABLE IF NOT EXISTS pending_orders (
+    id              INTEGER PRIMARY KEY AUTOINCREMENT,
+    order_id        TEXT    NOT NULL UNIQUE,
+    date            DATE    NOT NULL,
+    side            TEXT    NOT NULL,
+    symbol          TEXT    NOT NULL,
+    qty             INTEGER NOT NULL,
+    reason          TEXT    NOT NULL,
+    status          TEXT    NOT NULL DEFAULT 'PENDING',  -- PENDING | FILLED | NOFILL | MANUAL
+    detail          TEXT,
+    ts              TEXT    NOT NULL
+);

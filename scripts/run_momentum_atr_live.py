@@ -100,6 +100,37 @@ def _send_summary_alert(today: date, dry_run: bool, summary: dict) -> None:
         logger.warning("[momentum_atr] Failed to send summary alert: %s", e)
 
 
+def _late_fill_check(today: date, repo) -> int:
+    """2026-11-02 SHANTIGOLD.NS: the 09:17 SELL filled at 09:30, after the
+    run had stopped polling -- ledger kept the position and the day's buys
+    never happened. Cron'd a few times after 09:17: no pending orders -> no-op.
+    Once a pending order resolves (late SELL frees cash, late/no-fill BUY
+    unblocks buying) the day's live run is repeated on the same precomputed
+    ranking to place the buys it could not place at 09:17."""
+    if not repo.load_pending_orders():
+        logger.info("[momentum_atr] late-fill check: no pending orders")
+        return 0
+    try:
+        from broker.upstox import UpstoxBroker
+        from momentum_atr.execution import resolve_pending_orders, run_daily
+        broker = UpstoxBroker()
+        resolved = resolve_pending_orders(broker)
+        logger.info("[momentum_atr] late-fill check: %s", resolved)
+        if not (resolved["sells"] or resolved["buys"] or resolved["nofill"]):
+            return 0  # nothing changed -- still waiting
+        summary = run_daily(broker, today, dry_run=False, buys_only=True)
+    except Exception as e:
+        logger.exception("[momentum_atr] late-fill check crashed")
+        _alert_abort(today, f"late-fill check crashed: {e}")
+        return 1
+    if summary.get("aborted"):
+        logger.error("[momentum_atr] late-fill re-run aborted: %s", summary)
+        return 1
+    logger.info("[momentum_atr] late-fill re-run complete: %s", summary)
+    _send_summary_alert(today, False, summary)
+    return 0
+
+
 def main() -> int:
     parser = argparse.ArgumentParser(description=__doc__)
     mode = parser.add_mutually_exclusive_group(required=True)
@@ -107,6 +138,9 @@ def main() -> int:
                        help="Place real orders and mutate the ledger")
     mode.add_argument("--dry-run", action="store_true",
                        help="Run the full pipeline, place no orders, mutate no ledger state")
+    mode.add_argument("--late-fill-check", action="store_true",
+                       help="Apply pending orders that filled after the main run; if a SELL "
+                            "filled late, re-run the day's live run so the freed cash is bought")
     args = parser.parse_args()
 
     today = date.today()
@@ -117,6 +151,9 @@ def main() -> int:
         return 0
 
     from db import momentum_atr_repo as repo
+    repo.init_db()
+    if args.late_fill_check:
+        return _late_fill_check(today, repo)
     if args.live and repo.snapshot_exists_for_date(today):
         logger.warning(
             "[momentum_atr] snapshot for %s already exists -- already ran today. "

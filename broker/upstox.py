@@ -345,6 +345,26 @@ class UpstoxBroker(BaseBroker):
             logger.warning("[Upstox] find_recent_order_by_tag(%s) failed: %s", tag, e)
             return None
 
+    def find_order_in_book(self, order_id: str) -> Optional["OrderResult"]:
+        """Look up `order_id` in today's order book (order/retrieve-all) --
+        see BaseBroker.find_order_in_book. None if absent or the call fails."""
+        if not order_id:
+            return None
+        try:
+            resp = self._session.get(
+                f"{self._base_url}/order/retrieve-all",
+                headers=self._headers,
+                timeout=10,
+            )
+            resp.raise_for_status()
+            for o in resp.json().get("data", []) or []:
+                if str(o.get("order_id")) == str(order_id):
+                    return self._parse_order_response(o)
+            return None
+        except Exception as e:
+            logger.warning("[Upstox] find_order_in_book(%s) failed: %s", order_id, e)
+            return None
+
     def get_order_status(self, order_id: str) -> OrderResult:
         try:
             resp = self._session.get(
