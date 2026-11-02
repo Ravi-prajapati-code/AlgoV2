@@ -93,6 +93,22 @@ def pre_trade_check(symbol: str, strategy_id: str) -> Tuple[bool, str]:
     if row is None:
         return True, "no reconciliation history for symbol (genuinely new, not stale)"
 
+    # A snapshot cycle writes rows only for symbols held somewhere (broker,
+    # main or momentum_atr). A symbol missing from the latest successful,
+    # fresh cycle is therefore flat everywhere -- its old row (from when it
+    # was last held) is history, not stale data. Without this every
+    # previously-held symbol was blocked forever once its last row aged past
+    # the limit (2026-11-02: RAYMOND.NS last row 10-09, ATHERENERG.NS 09-09).
+    try:
+        last_ok = rrepo.load_latest_run_ts("observability_snapshot", "OK")
+    except Exception as e:
+        logger.error("pre_trade_check(%s, %s): run-log read failed: %s", symbol, strategy_id, e)
+        last_ok = None
+    if last_ok and row["ts"] < last_ok:
+        run_gap = _trading_sessions_since(_parse_snapshot_date(last_ok), date.today())
+        if run_gap <= RECONCILIATION_STALENESS_TRADING_SESSIONS:
+            return True, f"allowed: flat in latest snapshot ({last_ok}); last held row {row['ts']}"
+
     classification = row.get("classification")
     if classification in {c.value for c in BLOCKING_CLASSIFICATIONS}:
         return False, f"blocked: latest reconciliation classification is {classification}"

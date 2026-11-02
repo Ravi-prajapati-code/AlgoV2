@@ -289,3 +289,17 @@ def load_recent_run_log(limit: int = 50) -> List[dict]:
     ).fetchall()
     conn.close()
     return [dict(r) for r in rows]
+
+
+def load_latest_run_ts(job_name: str, status: str = "OK") -> Optional[str]:
+    """ts of the most recent strategy_run_log row for `job_name` with
+    `status`, or None. Used by reconciliation/gate.py to tell a symbol that
+    is flat (absent from the latest good snapshot) from one whose data is
+    genuinely stale."""
+    conn = get_connection()
+    row = conn.execute(
+        "SELECT ts FROM strategy_run_log WHERE job_name = ? AND status = ? ORDER BY id DESC LIMIT 1",
+        (job_name, status),
+    ).fetchone()
+    conn.close()
+    return row["ts"] if row else None

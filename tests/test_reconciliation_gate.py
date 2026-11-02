@@ -192,3 +192,40 @@ class TestBuyLoopPerSymbolContinue:
         bought_symbols = {o.symbol for o in broker.placed_orders}
         assert "BLOCKED.NS" not in bought_symbols
         assert "OK.NS" in bought_symbols
+
+
+def test_previously_held_symbol_flat_in_latest_snapshot_allowed():
+    """2026-11-02: RAYMOND.NS/ATHERENERG.NS were blocked forever -- their last
+    snapshot row dates from when they were last held (weeks ago), and a cycle
+    writes no row for a flat symbol. A fresh OK cycle without the symbol
+    means it is flat everywhere, so even an old UNKNOWN_POSITION row is history."""
+    _seed_registry()
+    _seed_snapshot("OLDHELD.NS", Classification.UNKNOWN_POSITION, (TODAY - timedelta(days=30)).isoformat())
+    rrepo.record_run_log(TODAY.isoformat(), "observability_snapshot", "OK")
+
+    allowed, reason = pre_trade_check("OLDHELD.NS", "main")
+
+    assert allowed is True
+    assert "flat in latest snapshot" in reason
+
+
+def test_old_row_still_blocked_when_snapshot_cron_itself_is_stale():
+    _seed_registry()
+    old = (TODAY - timedelta(days=10)).isoformat()
+    _seed_snapshot("OLD2.NS", Classification.MATCH, (TODAY - timedelta(days=20)).isoformat())
+    rrepo.record_run_log(old, "observability_snapshot", "OK")
+
+    allowed, reason = pre_trade_check("OLD2.NS", "main")
+
+    assert allowed is False
+    assert "trading sessions old" in reason
+
+
+def test_symbol_in_latest_snapshot_still_uses_its_classification():
+    _seed_registry()
+    rrepo.record_run_log(TODAY.isoformat(), "observability_snapshot", "OK")
+    _seed_snapshot("BAD.NS", Classification.DUPLICATE_OWNERSHIP, TODAY.isoformat() + "T00:00:01")
+
+    allowed, _reason = pre_trade_check("BAD.NS", "main")
+
+    assert allowed is False
