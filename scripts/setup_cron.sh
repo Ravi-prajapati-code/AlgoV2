@@ -13,7 +13,7 @@
 #   15:52 IST Mon-Fri  — Forward shadow ledger (Q3 #1: append-only RS cross-section)
 #   15:55 IST Mon-Fri  — Health check: alert if run failed
 #   16:05 IST Saturday — Score shadow ledger forward returns (20d horizon)
-#   16:30 IST Mon-Fri  — Nightly DB backup (30-day retention)
+#   16:30 IST Mon-Fri  — Nightly DB backup (14-day retention, gzipped)
 #   13:00 IST Friday   — Weekly universe re-rank
 
 set -euo pipefail
@@ -89,7 +89,7 @@ HEALTH_CRON="55 15 * * 1-5 cd $ALGO_DIR && $PYTHON $ALGO_DIR/scripts/health_chec
 # 6b. Shadow ledger scoring (Saturday 4:05 PM IST): forward 20d quintile spread
 SHADOW_SCORE_CRON="5 16 * * 6 cd $ALGO_DIR && $PYTHON $ALGO_DIR/scripts/shadow_ledger_score.py >> $LOG_DIR/shadow_ledger_score.log 2>&1"
 
-# 7. Nightly DB backup (4:30 PM IST): 30-day rolling backup
+# 7. Nightly DB backup (4:30 PM IST): 14-day rolling gzipped backup
 BACKUP_CRON="30 16 * * 1-5 cd $ALGO_DIR && $PYTHON $ALGO_DIR/scripts/backup_db.py >> $LOG_DIR/backup.log 2>&1"
 
 # 8. Weekly universe re-rank (1:00 PM IST Friday)
@@ -133,7 +133,7 @@ echo "  1. Token auto-refreshes at 08:30 IST (fallback reminder at 08:45)"
 echo "  2. Position reconcile + P&L summary sent at 09:20–09:25 IST"
 echo "  3. Strategy runs at 15:45 IST, shadow ledger at 15:52, health check at 15:55"
 echo "  3b. Shadow ledger scored Saturdays 16:05 IST"
-echo "  4. DB backed up at 16:30 IST → db/backups/ (30-day retention)"
+echo "  4. DB backed up at 16:30 IST → db/backups/ (14-day retention, gzipped)"
 echo "  5. Universe re-ranked every Friday 13:00 IST"
 echo ""
 echo "To switch to LIVE mode (real money):"

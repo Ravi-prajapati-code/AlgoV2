@@ -1,6 +1,6 @@
 """
-Nightly DB backup — copies trading.db to db/backups/trading_YYYYMMDD.db.
-Keeps last 30 days. Alerts via Telegram on failure.
+Nightly DB backup — copies trading.db to db/backups/trading_YYYYMMDD.db.gz.
+Keeps last 14 days (gzip ~5-10x smaller than raw SQLite). Alerts via Telegram on failure.
 
 Cron (add to server):
   # 16:30 IST Mon-Fri — after daily runner + health check complete
@@ -9,6 +9,7 @@ Cron (add to server):
 
 import os
 import sys
+import gzip
 import shutil
 import logging
 from datetime import date, timedelta
@@ -31,7 +32,7 @@ from config.settings import TELEGRAM_BOT_TOKEN, TELEGRAM_CHAT_ID
 
 DB_SOURCE   = ROOT / "db" / "trading.db"
 BACKUP_DIR  = ROOT / "db" / "backups"
-KEEP_DAYS   = 30
+KEEP_DAYS   = 14
 
 
 def _send(msg: str):
@@ -74,15 +75,26 @@ def run_backup():
         _send(msg)
         sys.exit(1)
 
+    # Compress, then drop the raw copy (also replaces daily_runner's pre-run raw copy)
+    gz_dest = dest.with_name(dest.name + ".gz")
+    try:
+        with open(dest, "rb") as fin, gzip.open(gz_dest, "wb", compresslevel=6) as fout:
+            shutil.copyfileobj(fin, fout)
+        dest.unlink()
+        dest = gz_dest
+    except Exception as e:
+        logger.warning("Compression failed, keeping raw backup: %s", e)
+        gz_dest.unlink(missing_ok=True)
+
     size_kb = dest.stat().st_size / 1024
     logger.info("Backup OK: %s (%.1f KB)", dest.name, size_kb)
 
     # Prune backups older than KEEP_DAYS
     cutoff = date.today() - timedelta(days=KEEP_DAYS)
     pruned = []
-    for f in BACKUP_DIR.glob("trading_*.db"):
+    for f in [*BACKUP_DIR.glob("trading_*.db"), *BACKUP_DIR.glob("trading_*.db.gz")]:
         try:
-            file_date_str = f.stem.split("_")[1]
+            file_date_str = f.name.split("_")[1].split(".")[0]
             from datetime import datetime
             file_date = datetime.strptime(file_date_str, "%Y%m%d").date()
             if file_date < cutoff:
@@ -94,7 +106,7 @@ def run_backup():
     if pruned:
         logger.info("Pruned %d old backups: %s", len(pruned), pruned)
 
-    remaining = len(list(BACKUP_DIR.glob("trading_*.db")))
+    remaining = len(list(BACKUP_DIR.glob("trading_*.db*")))
     print(f"[{date.today()}] Backup OK: {dest.name} ({size_kb:.1f} KB). Kept {remaining} backups.")
 
 
